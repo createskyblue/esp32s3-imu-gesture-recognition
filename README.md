@@ -60,6 +60,7 @@
 | `/ota/upload/firmware` | 上传固件刷写 |
 | `/ota/upload/filesystem` | 上传文件系统镜像 |
 | `/api/fs` | 文件管理 API（list/download/delete/mkdir/upload） |
+| `/hello` | Hello World 示例端点（自定义业务模板） |
 
 ## 快速开始
 
@@ -88,27 +89,46 @@ idf.py -p COMx flash monitor
 
 ```
 ├── CMakeLists.txt
-├── partitions.csv           # OTA 分区表 (app×2 + LittleFS)
-├── sdkconfig.defaults       # ESP-IDF 默认配置
-├── main/
-│   ├── main.c               # 入口：LED → SD卡 → Web 服务
-│   ├── web_server.c/.h      # WiFi + HTTP + OTA + 配网
-│   ├── led_task.c/.h        # 四路 LED 控制
-│   ├── sd_card.c/.h         # SD 卡 SPI 驱动
-│   ├── sd_logger.c/.h       # 日志双写到 SD 卡
-│   ├── file_manager.c/.h    # Web 文件管理器
+├── partitions.csv              # OTA 分区表 (app×2 + LittleFS)
+├── sdkconfig.defaults          # ESP-IDF 默认配置
+├── main/                       # 应用层（入口 + 自定义业务端点）
+│   ├── main.c                  # 入口：LED → SD卡 → web_platform → hello_web
+│   ├── hello_web.c/.h          # ★ 自定义 HTTP 端点模板（从这里开始写业务）
 │   └── wifi_config.example.h
 ├── data/
-│   ├── index.html           # 仪表盘首页
-│   └── files.html           # 文件管理器页面
-└── components/json/         # cJSON 辅助组件
+│   ├── index.html              # 仪表盘首页
+│   └── files.html              # 文件管理器页面
+└── components/
+    ├── web_platform/           # Web 基础设施（HTTP 服务器 + 页面路由）
+    ├── wifi_manager/           # WiFi APSTA + DNS 劫持 + SNTP + 凭据持久化
+    ├── ota_manager/            # OTA 状态机 + 下载刷写 + 上传逻辑
+    ├── file_manager/           # Web 文件管理器 API
+    ├── led_task/               # 四路 LED 驱动
+    ├── sd_card/                # SD 卡 SPI 驱动
+    ├── sd_logger/              # 日志双写到 SD 卡
+    └── json/                   # cJSON 辅助组件
 ```
 
 ## 添加自己的业务
 
-1. 在 `main/` 下新建你的 `.c/.h` 文件
-2. 在 `main/CMakeLists.txt` 的 `SRCS` 中添加文件名
-3. 在 `main/main.c` 的 `app_main()` 中调用你的初始化函数
-4. 如需新的托管组件，在 `main/idf_component.yml` 的 `dependencies` 中添加
+项目采用 **平台 + 业务** 分层架构：
+
+1. `components/web_platform/` — 基础设施，WiFi / OTA / 配网 / 仪表盘，开箱即用
+2. `main/hello_web.c/.h` — 业务端点模板，从这里开始写你的 HTTP handler
+
+**三步添加自定义端点：**
+
+```c
+// 1. 在 hello_web.c 中仿照 hello_handler() 写你的 handler
+// 2. 在 hello_web_register() 中注册新的 URI
+// 3. main.c 中的注册流程已就绪：
+//    web_platform_init()
+//    hello_web_register(web_platform_get_server())   // ← 你的业务
+//    web_platform_register_static_fallback()          // 必须最后
+```
+
+**更复杂的场景**：直接在 `components/` 下新建独立组件，在 `main/CMakeLists.txt` 中添加依赖即可。
+
+**基础设施模块**（`web_platform` / `file_manager` / `led_task` / `sd_card` / `sd_logger`）已全部独立为 `components/` 下的可复用组件，新项目可直接引用。
 
 模板已为你处理好了 WiFi、存储、Web 服务等基础设施，你只需关注自己的业务逻辑。

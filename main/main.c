@@ -10,7 +10,8 @@
 #include "led_task.h"
 #include "sd_card.h"
 #include "sd_logger.h"
-#include "web_server.h"
+#include "web_platform.h"
+#include "hello_web.h"
 
 static const char *TAG = "MAIN";
 
@@ -33,7 +34,15 @@ void app_main(void)
         }
     }
 
-    ESP_ERROR_CHECK(web_server_init_and_start());
+    /* ── 平台基础 Web 服务（WiFi + LittleFS + OTA + 文件管理） ── */
+    ESP_ERROR_CHECK(web_platform_init());
+
+    /* ── 自定义业务端点 ────────────────────────────────────── */
+    hello_web_register(web_platform_get_server());
+
+    /* ── 静态文件回退 ── 必须最后注册 ──────────────────────── */
+    ESP_ERROR_CHECK(web_platform_register_static_fallback());
+
     ESP_LOGI(TAG, "all tasks started");
 }
 
