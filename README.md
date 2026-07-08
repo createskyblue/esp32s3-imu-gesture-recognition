@@ -91,15 +91,15 @@ idf.py -p COMx flash monitor
 ├── CMakeLists.txt
 ├── partitions.csv              # OTA 分区表 (app×2 + LittleFS)
 ├── sdkconfig.defaults          # ESP-IDF 默认配置
-├── main/                       # 应用层（入口 + 自定义业务端点）
+├── main/                       # 应用层（基础设施编排 + 业务端点）
 │   ├── main.c                  # 入口：LED → SD卡 → web_platform → hello_web
+│   ├── web_platform.c/.h       # 基础设施胶水层（HTTP 服务器 + 页面路由 + 组件编排）
 │   ├── hello_web.c/.h          # ★ 自定义 HTTP 端点模板（从这里开始写业务）
 │   └── wifi_config.example.h
 ├── data/
 │   ├── index.html              # 仪表盘首页
 │   └── files.html              # 文件管理器页面
 └── components/
-    ├── web_platform/           # Web 基础设施（HTTP 服务器 + 页面路由）
     ├── wifi_manager/           # WiFi APSTA + DNS 劫持 + SNTP + 凭据持久化
     ├── ota_manager/            # OTA 状态机 + 下载刷写 + 上传逻辑
     ├── file_manager/           # Web 文件管理器 API
@@ -113,7 +113,7 @@ idf.py -p COMx flash monitor
 
 项目采用 **平台 + 业务** 分层架构：
 
-1. `components/web_platform/` — 基础设施，WiFi / OTA / 配网 / 仪表盘，开箱即用
+1. `main/web_platform.c` — 基础设施胶水层，WiFi / OTA / 配网 / 仪表盘，开箱即用
 2. `main/hello_web.c/.h` — 业务端点模板，从这里开始写你的 HTTP handler
 
 **三步添加自定义端点：**
@@ -129,6 +129,6 @@ idf.py -p COMx flash monitor
 
 **更复杂的场景**：直接在 `components/` 下新建独立组件，在 `main/CMakeLists.txt` 中添加依赖即可。
 
-**基础设施模块**（`web_platform` / `file_manager` / `led_task` / `sd_card` / `sd_logger`）已全部独立为 `components/` 下的可复用组件，新项目可直接引用。
+**可复用模块**（`wifi_manager` / `ota_manager` / `file_manager` / `led_task` / `sd_card` / `sd_logger`）已全部独立为 `components/` 下的组件，新项目可直接引用。
 
 模板已为你处理好了 WiFi、存储、Web 服务等基础设施，你只需关注自己的业务逻辑。
