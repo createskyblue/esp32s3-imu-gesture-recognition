@@ -75,3 +75,4 @@ Desktop.ini
 
 # WiFi credentials (copy wifi_config.example.h to wifi_config.h)
 main/wifi_config.h
+data/wifi_config.json

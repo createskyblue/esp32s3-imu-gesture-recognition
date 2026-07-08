@@ -10,11 +10,13 @@
     main{width:min(960px,100%);margin:0 auto;display:grid;gap:14px}
     h1{margin:0 0 4px;font-size:28px;line-height:1.15}
     h2{margin:0 0 10px;font-size:17px;color:#374151}
-    button,input{border:1px solid #97acbf;border-radius:8px;padding:10px 12px;font-weight:700;cursor:pointer;font-size:14px}
+    button,input,select{border:1px solid #97acbf;border-radius:8px;padding:10px 12px;font-weight:700;cursor:pointer;font-size:14px}
     button{background:#eaf4f2;color:#172033}
+    button:disabled{opacity:.5;cursor:not-allowed}
     button.primary{background:#0891b2;border-color:#0891b2;color:#fff}
-    button.primary:hover{background:#0e7490}
+    button.primary:hover:not(:disabled){background:#0e7490}
     input{width:100%;background:#fff;color:#172033;border:1px solid #b8c7d4}
+    input[type=file]{padding:8px;font-size:13px}
     .top{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:4px}
     .actions{display:flex;gap:8px;flex-wrap:wrap}
     .panel{background:#fff;border:1px solid #d7e0ea;border-radius:8px;padding:18px}
@@ -39,13 +41,14 @@
     .sys-item{border:1px solid #d7e0ea;border-radius:8px;padding:10px;text-align:center}
     .sys-item .label{font-size:12px;color:#5c6878;margin-bottom:2px}
     .sys-item .value{font-size:20px;font-weight:800}
-    .links{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
-    .links a{color:#0891b2;text-decoration:none;font-weight:700;font-size:15px;padding:8px 14px;border:1px solid #b8c7d4;border-radius:8px;background:#f8fafc}
-    .links a:hover{background:#ecfeff;border-color:#0891b2}
-    .ota-progress{margin-top:10px;height:12px;border-radius:999px;background:#e5e7eb;overflow:hidden;border:1px solid #d7e0ea}
+    pre{white-space:pre-wrap;background:#0f172a;color:#d1fae5;border-radius:8px;padding:12px;overflow:auto;font-size:12px;max-height:260px;margin-top:10px}
+    .ota-form{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin-bottom:10px}
+    .ota-form label{display:grid;gap:5px;font-size:13px;color:#5c6878}
+    .ota-progress{margin-top:6px;height:12px;border-radius:999px;background:#e5e7eb;overflow:hidden;border:1px solid #d7e0ea}
     .ota-progress span{display:block;height:100%;width:0;background:#0891b2;transition:width .3s ease}
     .ota-status{margin-top:6px;font-size:13px;color:#5c6878;min-height:18px}
     footer{margin-top:8px;text-align:center;color:#9ca3af;font-size:12px}
+    @media(max-width:760px){body{padding:10px}.network-grid,.sys-grid,.wifi-form,.ota-form{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
@@ -92,41 +95,39 @@
 
     <!-- WiFi Config Form -->
     <h2 style="margin-top:4px">🔧 WiFi 配网</h2>
-    <div class="wifi-form">
-      <label>SSID（WiFi 名称）<input type="text" id="wifi-ssid" placeholder="请输入 WiFi 名称"></label>
-      <label>密码<input type="password" id="wifi-pass" placeholder="请输入 WiFi 密码"></label>
-      <button class="primary" onclick="saveWiFi()" style="height:fit-content">保存并连接</button>
-    </div>
+    <form id="wifi-form" class="wifi-form" onsubmit="event.preventDefault();saveWiFi()">
+      <label>SSID（WiFi 名称）<input type="text" id="wifi-ssid" placeholder="请输入 WiFi 名称" maxlength="32"></label>
+      <label>密码<input type="password" id="wifi-pass" placeholder="请输入 WiFi 密码" maxlength="63"></label>
+      <button class="primary" type="submit" style="height:fit-content">保存并连接</button>
+    </form>
     <div class="wifi-message" id="wifi-msg"></div>
   </div>
 
   <!-- System Info -->
   <div class="panel">
-    <h2>💻 系统信息</h2>
-    <div class="sys-grid" id="sys-info">
-      <div class="sys-item"><div class="label">可用堆</div><div class="value" id="free-heap">--</div></div>
+    <h2>💻 系统信息 <span style="font-weight:400;font-size:13px;color:#5c6878" id="debug-uptime">运行时间 --</span></h2>
+    <div class="sys-grid">
+      <div class="sys-item"><div class="label">内部空闲堆</div><div class="value" id="free-heap">--</div></div>
+      <div class="sys-item"><div class="label">内部最小堆</div><div class="value" id="min-heap">--</div></div>
+      <div class="sys-item"><div class="label">最大可用块</div><div class="value" id="largest-block">--</div></div>
       <div class="sys-item"><div class="label">PSRAM</div><div class="value" id="psram">--</div></div>
-      <div class="sys-item"><div class="label">运行时间</div><div class="value" id="uptime">--</div></div>
-      <div class="sys-item"><div class="label">SDK 版本</div><div class="value" id="idf-ver" style="font-size:14px">--</div></div>
     </div>
-    <div style="margin-top:10px;font-size:12px;color:#9ca3af">
-      固件: <span id="build-id">--</span> | SHA256: <span id="sha256" style="font-family:monospace">--</span>
-    </div>
-    <div style="font-size:12px;color:#9ca3af">
-      构建时间: <span id="build-ts">--</span>
-    </div>
-
-    <!-- Quick Links -->
-    <div class="links">
-      <a href="/debug.json" target="_blank">📋 调试信息</a>
-      <a href="/network.json" target="_blank">🌐 网络详情</a>
-      <a href="/wifi_config.json" target="_blank">📝 WiFi 配置</a>
+    <pre id="task-list">任务列表加载中...</pre>
+    <div style="margin-top:8px;font-size:12px;color:#9ca3af">
+      固件: <span id="build-id">--</span> | 构建时间: <span id="build-ts">--</span>
     </div>
   </div>
 
-  <!-- OTA Status -->
+  <!-- OTA -->
   <div class="panel">
     <h2>⬆️ OTA 升级</h2>
+    <form id="ota-form" class="ota-form" onsubmit="event.preventDefault();startOta()">
+      <label>固件文件 (.bin)<input type="file" id="ota-fw-file" accept=".bin"></label>
+      <label>文件系统文件 (.bin)<input type="file" id="ota-fs-file" accept=".bin"></label>
+      <button class="primary" type="submit" id="ota-btn" style="height:fit-content">开始更新</button>
+      <label>固件链接<input type="url" id="ota-fw-url" placeholder="https://server/app.bin（可选）" onblur="saveOtaUrls()"></label>
+      <label>文件系统链接<input type="url" id="ota-fs-url" placeholder="https://server/storage.bin（可选）" onblur="saveOtaUrls()"></label>
+    </form>
     <div class="ota-progress"><span id="ota-bar"></span></div>
     <div class="ota-status" id="ota-status">空闲</div>
   </div>
@@ -138,118 +139,208 @@
 const AP_PASS = 'template1234';
 document.getElementById('ap-pass').textContent = AP_PASS;
 
+/* ── format helpers ────────────────────────────────────────────────── */
+function formatBytes(n) {
+  if (n >= 1048576) return (n/1048576).toFixed(1) + ' MB';
+  if (n >= 1024) return (n/1024).toFixed(1) + ' KB';
+  return n + ' B';
+}
+function formatUptime(ms) {
+  if (!ms) return '--';
+  const s = Math.floor(ms / 1000), m = Math.floor(s / 60), h = Math.floor(m / 60);
+  if (h > 0) return h + 'h ' + (m % 60) + 'm';
+  if (m > 0) return m + 'm ' + (s % 60) + 's';
+  return s + 's';
+}
+
+/* ── network + system refresh ──────────────────────────────────────── */
 async function refresh() {
   try {
     const r = await fetch('/network.json');
     const d = await r.json();
-
-    // STA status
-    const staConnected = d.sta_connected;
+    const ok = d.sta_connected;
     const staEl = document.getElementById('sta-status');
     const badgeEl = document.getElementById('sta-badge');
-    if (staConnected) {
-      staEl.textContent = d.sta_ip;
-      staEl.className = 'value ok';
-      badgeEl.textContent = '已连接';
-      badgeEl.className = 'badge ok';
+    if (ok) {
+      staEl.textContent = d.sta_ip; staEl.className = 'value ok';
+      badgeEl.textContent = '已连接'; badgeEl.className = 'badge ok';
     } else {
-      staEl.textContent = '未连接';
-      staEl.className = 'value wait';
+      staEl.textContent = '未连接'; staEl.className = 'value wait';
       badgeEl.textContent = d.sta_ssid ? '连接中' : '未配置';
       badgeEl.className = d.sta_ssid ? 'badge warn' : 'badge info';
     }
     document.getElementById('sta-ssid').textContent = d.sta_ssid || '(未配置)';
-    document.getElementById('sta-ip').textContent = staConnected ? d.sta_ip : '--';
+    document.getElementById('sta-ip').textContent = ok ? d.sta_ip : '--';
     document.getElementById('ap-ssid').textContent = d.ap_ssid;
     document.getElementById('ap-ip').textContent = d.ap_ip;
-
-    // Pre-fill WiFi form
-    if (d.sta_ssid) {
-      document.getElementById('wifi-ssid').value = d.sta_ssid;
-    }
-
-    // Device info
+    if (d.sta_ssid) document.getElementById('wifi-ssid').value = d.sta_ssid;
     document.getElementById('build-id').textContent = d.app_build_id;
-    document.getElementById('sha256').textContent = d.firmware_sha256 ? d.firmware_sha256.substring(0,16)+'...' : '--';
     document.getElementById('build-ts').textContent = d.build_timestamp;
-    document.getElementById('idf-ver').textContent = d.idf_version;
-  } catch(e) {
-    console.error('network.json fetch failed', e);
-  }
+  } catch(e) { console.error('network', e); }
 
-  // System debug info
   try {
     const r = await fetch('/debug.json');
     const d = await r.json();
-    document.getElementById('free-heap').textContent = formatBytes(d.free_heap);
+    document.getElementById('free-heap').textContent = formatBytes(d.internal_free_heap);
+    document.getElementById('min-heap').textContent = formatBytes(d.internal_min_free_heap);
+    document.getElementById('largest-block').textContent = formatBytes(d.internal_largest_free_block);
     document.getElementById('psram').textContent = d.psram_free_heap > 0 ? formatBytes(d.psram_free_heap) : 'N/A';
-    document.getElementById('uptime').textContent = formatUptime(d.uptime_ms);
-  } catch(e) {
-    console.error('debug.json fetch failed', e);
-  }
+    document.getElementById('debug-uptime').textContent = '运行时间 ' + formatUptime(d.uptime_ms);
+    document.getElementById('task-list').textContent = d.task_list || '(无任务信息)';
+  } catch(e) { console.error('debug', e); }
 
-  // OTA status
   try {
     const r = await fetch('/ota/status');
     const d = await r.json();
     document.getElementById('ota-bar').style.width = d.progress + '%';
     document.getElementById('ota-status').textContent =
       d.phase + ' · ' + d.message + (d.current_label ? ' · ' + d.current_label : '');
-  } catch(e) {
-    // OTA endpoint may not exist yet
-  }
+  } catch(e) { /* OTA endpoint not critical */ }
 }
 
-function formatBytes(n) {
-  if (n >= 1048576) return (n/1048576).toFixed(1) + ' MB';
-  if (n >= 1024) return (n/1024).toFixed(1) + ' KB';
-  return n + ' B';
-}
-
-function formatUptime(ms) {
-  if (!ms) return '--';
-  const s = Math.floor(ms / 1000);
-  const m = Math.floor(s / 60);
-  const h = Math.floor(m / 60);
-  if (h > 0) return h + 'h ' + (m % 60) + 'm';
-  if (m > 0) return m + 'm ' + (s % 60) + 's';
-  return s + 's';
-}
-
+/* ── WiFi save ─────────────────────────────────────────────────────── */
 async function saveWiFi() {
   const ssid = document.getElementById('wifi-ssid').value.trim();
   const pass = document.getElementById('wifi-pass').value;
   const msg = document.getElementById('wifi-msg');
-
-  if (!ssid) {
-    msg.textContent = '请输入 WiFi 名称';
-    msg.className = 'wifi-message error';
-    return;
-  }
-
-  msg.textContent = '正在保存...';
-  msg.className = 'wifi-message';
-
+  if (!ssid) { msg.textContent = '请输入 WiFi 名称'; msg.className = 'wifi-message error'; return; }
+  msg.textContent = '正在保存...'; msg.className = 'wifi-message';
   try {
     const r = await fetch('/wifi_config.json', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ssid: ssid, password: pass})
+      body: JSON.stringify({ssid, password: pass})
     });
     const d = await r.json();
     if (d.ok) {
-      msg.textContent = '✅ WiFi 配置已保存，正在连接 ' + ssid + '...';
+      msg.textContent = '✅ 已保存，正在连接 ' + ssid + '...';
       msg.className = 'wifi-message success';
+      document.getElementById('wifi-pass').value = '';
     } else {
-      msg.textContent = '保存失败';
-      msg.className = 'wifi-message error';
+      msg.textContent = '保存失败'; msg.className = 'wifi-message error';
     }
   } catch(e) {
-    msg.textContent = '网络错误: ' + e.message;
-    msg.className = 'wifi-message error';
+    msg.textContent = '网络错误: ' + e.message; msg.className = 'wifi-message error';
   }
 }
 
+/* ── OTA ───────────────────────────────────────────────────────────── */
+const OTA_LS_KEY = 'ota_urls';
+function saveOtaUrls() {
+  try {
+    localStorage.setItem(OTA_LS_KEY, JSON.stringify({
+      fw: document.getElementById('ota-fw-url').value,
+      fs: document.getElementById('ota-fs-url').value
+    }));
+  } catch(e) {}
+}
+function restoreOtaUrls() {
+  try {
+    const s = JSON.parse(localStorage.getItem(OTA_LS_KEY));
+    if (s) {
+      if (s.fw) document.getElementById('ota-fw-url').value = s.fw;
+      if (s.fs) document.getElementById('ota-fs-url').value = s.fs;
+    }
+  } catch(e) {}
+}
+
+let otaPollTimer = null;
+function setOtaProgress(pct, text) {
+  const p = Math.max(0, Math.min(100, Number(pct) || 0));
+  document.getElementById('ota-bar').style.width = p + '%';
+  document.getElementById('ota-status').textContent = text || ('OTA ' + p.toFixed(0) + '%');
+}
+async function pollOtaStatus() {
+  try {
+    const r = await fetch('/ota/status');
+    const d = await r.json();
+    setOtaProgress(d.progress, [d.phase, d.progress+'%', d.current_label, d.message].filter(Boolean).join(' · '));
+    if (d.phase === 'done' || d.phase === 'failed' || d.phase === 'idle') {
+      clearInterval(otaPollTimer); otaPollTimer = null;
+      document.getElementById('ota-btn').disabled = false;
+      if (d.reboot_required) {
+        document.getElementById('ota-status').textContent += '，3秒后刷新...';
+        setTimeout(() => location.reload(), 3000);
+      }
+    }
+  } catch(e) { setOtaProgress(0, '状态获取失败'); }
+}
+
+function uploadFile(file, endpoint, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', endpoint, true);
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.upload.onprogress = e => { if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total); };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(JSON.parse(xhr.responseText)); } catch(e) { resolve({ok: true}); }
+      } else { reject(new Error(xhr.responseText || ('HTTP ' + xhr.status))); }
+    };
+    xhr.onerror = () => reject(new Error('网络连接失败'));
+    xhr.ontimeout = () => reject(new Error('上传超时'));
+    xhr.timeout = 300000;
+    xhr.send(file);
+  });
+}
+
+async function startOta() {
+  const fwFile = document.getElementById('ota-fw-file').files[0];
+  const fsFile = document.getElementById('ota-fs-file').files[0];
+  const fwUrl = document.getElementById('ota-fw-url').value.trim();
+  const fsUrl = document.getElementById('ota-fs-url').value.trim();
+  const btn = document.getElementById('ota-btn');
+
+  if (!fwFile && !fsFile && !fwUrl && !fsUrl) {
+    setOtaProgress(0, '请至少选择一个文件或填写一个链接'); return;
+  }
+
+  if (fwFile || fsFile) {
+    btn.disabled = true;
+    try {
+      if (fwFile) {
+        setOtaProgress(0, '上传固件: ' + fwFile.name);
+        await uploadFile(fwFile, '/ota/upload/firmware', (loaded, total) => {
+          setOtaProgress(Math.round(loaded/total*100), '上传固件: ' + Math.round(loaded/total*100) + '%');
+        });
+        setOtaProgress(100, '固件上传成功');
+      }
+      if (fsFile) {
+        setOtaProgress(0, '上传文件系统: ' + fsFile.name);
+        await uploadFile(fsFile, '/ota/upload/filesystem', (loaded, total) => {
+          setOtaProgress(Math.round(loaded/total*100), '上传文件系统: ' + Math.round(loaded/total*100) + '%');
+        });
+        setOtaProgress(100, '文件系统上传成功');
+      }
+      setOtaProgress(100, '上传完成，设备即将重启，3秒后刷新...');
+      setTimeout(() => location.reload(), 3000);
+    } catch(err) {
+      btn.disabled = false;
+      setOtaProgress(0, '上传失败: ' + err.message);
+    }
+  } else {
+    btn.disabled = true;
+    setOtaProgress(1, 'OTA 已提交，等待下载...');
+    try {
+      const r = await fetch('/ota/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({firmware_url: fwUrl, filesystem_url: fsUrl})
+      });
+      if (!r.ok) throw new Error(await r.text());
+      await r.json();
+      if (otaPollTimer) clearInterval(otaPollTimer);
+      otaPollTimer = setInterval(pollOtaStatus, 1000);
+      pollOtaStatus();
+    } catch(err) {
+      btn.disabled = false;
+      setOtaProgress(0, 'OTA 启动失败: ' + err.message);
+    }
+  }
+}
+
+/* ── init ──────────────────────────────────────────────────────────── */
+restoreOtaUrls();
 refresh();
 setInterval(refresh, 5000);
 </script>
