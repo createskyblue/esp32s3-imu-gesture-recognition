@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ESP32-S3 模板</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{min-height:100vh;padding:16px;font-family:Arial,'Microsoft YaHei',sans-serif;background:#eef3f7;color:#172033}
+    main{width:min(960px,100%);margin:0 auto;display:grid;gap:14px}
+    h1{margin:0 0 4px;font-size:28px;line-height:1.15}
+    h2{margin:0 0 10px;font-size:17px;color:#374151}
+    button,input{border:1px solid #97acbf;border-radius:8px;padding:10px 12px;font-weight:700;cursor:pointer;font-size:14px}
+    button{background:#eaf4f2;color:#172033}
+    button.primary{background:#0891b2;border-color:#0891b2;color:#fff}
+    button.primary:hover{background:#0e7490}
+    input{width:100%;background:#fff;color:#172033;border:1px solid #b8c7d4}
+    .top{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:4px}
+    .actions{display:flex;gap:8px;flex-wrap:wrap}
+    .panel{background:#fff;border:1px solid #d7e0ea;border-radius:8px;padding:18px}
+    .subtitle{color:#5c6878;font-size:14px;margin-top:2px}
+    .network-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+    .card{border:1px solid #d7e0ea;border-radius:8px;padding:14px;background:#fbfdff}
+    .card h3{font-size:14px;color:#5c6878;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px}
+    .card .value{font-size:22px;font-weight:800;color:#172033;word-break:break-all}
+    .card .value.ok{color:#166534}
+    .card .value.wait{color:#92400e}
+    .card .label-row{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+    .badge{display:inline-block;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:800}
+    .badge.ok{background:#dcfce7;color:#166534}
+    .badge.warn{background:#fef3c7;color:#92400e}
+    .badge.info{background:#dbeafe;color:#1e40af}
+    .wifi-form{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin-top:12px}
+    .wifi-form label{display:grid;gap:5px;font-size:13px;color:#5c6878}
+    .wifi-message{margin-top:10px;min-height:20px;font-size:13px;color:#5c6878}
+    .wifi-message.success{color:#166534}
+    .wifi-message.error{color:#991b1b}
+    .sys-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+    .sys-item{border:1px solid #d7e0ea;border-radius:8px;padding:10px;text-align:center}
+    .sys-item .label{font-size:12px;color:#5c6878;margin-bottom:2px}
+    .sys-item .value{font-size:20px;font-weight:800}
+    .links{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+    .links a{color:#0891b2;text-decoration:none;font-weight:700;font-size:15px;padding:8px 14px;border:1px solid #b8c7d4;border-radius:8px;background:#f8fafc}
+    .links a:hover{background:#ecfeff;border-color:#0891b2}
+    .ota-progress{margin-top:10px;height:12px;border-radius:999px;background:#e5e7eb;overflow:hidden;border:1px solid #d7e0ea}
+    .ota-progress span{display:block;height:100%;width:0;background:#0891b2;transition:width .3s ease}
+    .ota-status{margin-top:6px;font-size:13px;color:#5c6878;min-height:18px}
+    footer{margin-top:8px;text-align:center;color:#9ca3af;font-size:12px}
+  </style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div>
+      <h1>ESP32-S3 模板</h1>
+      <div class="subtitle">WiFi 配网 · 文件管理 · OTA 升级</div>
+    </div>
+    <div class="actions">
+      <button onclick="location.href='/files'">📁 文件管理</button>
+      <button onclick="location.reload()">🔄 刷新</button>
+    </div>
+  </div>
+
+  <!-- WiFi Status -->
+  <div class="panel">
+    <h2>📡 网络状态</h2>
+    <div class="network-grid">
+      <div class="card">
+        <h3>STA (连接路由器)</h3>
+        <div class="label-row">
+          <span class="value" id="sta-status">--</span>
+          <span class="badge" id="sta-badge">检测中</span>
+        </div>
+        <div style="margin-top:8px;font-size:13px;color:#5c6878">
+          SSID: <b id="sta-ssid" style="color:#172033">--</b>
+        </div>
+        <div style="font-size:13px;color:#5c6878">
+          IP: <b id="sta-ip" style="color:#172033">--</b>
+        </div>
+      </div>
+      <div class="card">
+        <h3>AP (配置热点)</h3>
+        <div class="value" id="ap-ssid" style="font-size:20px">--</div>
+        <div style="margin-top:6px;font-size:13px;color:#5c6878">
+          IP: <b id="ap-ip" style="color:#172033">--</b>
+        </div>
+        <div style="font-size:13px;color:#5c6878">
+          密码: <b id="ap-pass" style="color:#172033">--</b>
+        </div>
+      </div>
+    </div>
+
+    <!-- WiFi Config Form -->
+    <h2 style="margin-top:4px">🔧 WiFi 配网</h2>
+    <div class="wifi-form">
+      <label>SSID（WiFi 名称）<input type="text" id="wifi-ssid" placeholder="请输入 WiFi 名称"></label>
+      <label>密码<input type="password" id="wifi-pass" placeholder="请输入 WiFi 密码"></label>
+      <button class="primary" onclick="saveWiFi()" style="height:fit-content">保存并连接</button>
+    </div>
+    <div class="wifi-message" id="wifi-msg"></div>
+  </div>
+
+  <!-- System Info -->
+  <div class="panel">
+    <h2>💻 系统信息</h2>
+    <div class="sys-grid" id="sys-info">
+      <div class="sys-item"><div class="label">可用堆</div><div class="value" id="free-heap">--</div></div>
+      <div class="sys-item"><div class="label">PSRAM</div><div class="value" id="psram">--</div></div>
+      <div class="sys-item"><div class="label">运行时间</div><div class="value" id="uptime">--</div></div>
+      <div class="sys-item"><div class="label">SDK 版本</div><div class="value" id="idf-ver" style="font-size:14px">--</div></div>
+    </div>
+    <div style="margin-top:10px;font-size:12px;color:#9ca3af">
+      固件: <span id="build-id">--</span> | SHA256: <span id="sha256" style="font-family:monospace">--</span>
+    </div>
+    <div style="font-size:12px;color:#9ca3af">
+      构建时间: <span id="build-ts">--</span>
+    </div>
+
+    <!-- Quick Links -->
+    <div class="links">
+      <a href="/debug.json" target="_blank">📋 调试信息</a>
+      <a href="/network.json" target="_blank">🌐 网络详情</a>
+      <a href="/wifi_config.json" target="_blank">📝 WiFi 配置</a>
+    </div>
+  </div>
+
+  <!-- OTA Status -->
+  <div class="panel">
+    <h2>⬆️ OTA 升级</h2>
+    <div class="ota-progress"><span id="ota-bar"></span></div>
+    <div class="ota-status" id="ota-status">空闲</div>
+  </div>
+
+  <footer>ESP32-S3 Template · Powered by ESP-IDF</footer>
+</main>
+
+<script>
+const AP_PASS = 'template1234';
+document.getElementById('ap-pass').textContent = AP_PASS;
+
+async function refresh() {
+  try {
+    const r = await fetch('/network.json');
+    const d = await r.json();
+
+    // STA status
+    const staConnected = d.sta_connected;
+    const staEl = document.getElementById('sta-status');
+    const badgeEl = document.getElementById('sta-badge');
+    if (staConnected) {
+      staEl.textContent = d.sta_ip;
+      staEl.className = 'value ok';
+      badgeEl.textContent = '已连接';
+      badgeEl.className = 'badge ok';
+    } else {
+      staEl.textContent = '未连接';
+      staEl.className = 'value wait';
+      badgeEl.textContent = d.sta_ssid ? '连接中' : '未配置';
+      badgeEl.className = d.sta_ssid ? 'badge warn' : 'badge info';
+    }
+    document.getElementById('sta-ssid').textContent = d.sta_ssid || '(未配置)';
+    document.getElementById('sta-ip').textContent = staConnected ? d.sta_ip : '--';
+    document.getElementById('ap-ssid').textContent = d.ap_ssid;
+    document.getElementById('ap-ip').textContent = d.ap_ip;
+
+    // Pre-fill WiFi form
+    if (d.sta_ssid) {
+      document.getElementById('wifi-ssid').value = d.sta_ssid;
+    }
+
+    // Device info
+    document.getElementById('build-id').textContent = d.app_build_id;
+    document.getElementById('sha256').textContent = d.firmware_sha256 ? d.firmware_sha256.substring(0,16)+'...' : '--';
+    document.getElementById('build-ts').textContent = d.build_timestamp;
+    document.getElementById('idf-ver').textContent = d.idf_version;
+  } catch(e) {
+    console.error('network.json fetch failed', e);
+  }
+
+  // System debug info
+  try {
+    const r = await fetch('/debug.json');
+    const d = await r.json();
+    document.getElementById('free-heap').textContent = formatBytes(d.free_heap);
+    document.getElementById('psram').textContent = d.psram_free_heap > 0 ? formatBytes(d.psram_free_heap) : 'N/A';
+    document.getElementById('uptime').textContent = formatUptime(d.uptime_ms);
+  } catch(e) {
+    console.error('debug.json fetch failed', e);
+  }
+
+  // OTA status
+  try {
+    const r = await fetch('/ota/status');
+    const d = await r.json();
+    document.getElementById('ota-bar').style.width = d.progress + '%';
+    document.getElementById('ota-status').textContent =
+      d.phase + ' · ' + d.message + (d.current_label ? ' · ' + d.current_label : '');
+  } catch(e) {
+    // OTA endpoint may not exist yet
+  }
+}
+
+function formatBytes(n) {
+  if (n >= 1048576) return (n/1048576).toFixed(1) + ' MB';
+  if (n >= 1024) return (n/1024).toFixed(1) + ' KB';
+  return n + ' B';
+}
+
+function formatUptime(ms) {
+  if (!ms) return '--';
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  if (h > 0) return h + 'h ' + (m % 60) + 'm';
+  if (m > 0) return m + 'm ' + (s % 60) + 's';
+  return s + 's';
+}
+
+async function saveWiFi() {
+  const ssid = document.getElementById('wifi-ssid').value.trim();
+  const pass = document.getElementById('wifi-pass').value;
+  const msg = document.getElementById('wifi-msg');
+
+  if (!ssid) {
+    msg.textContent = '请输入 WiFi 名称';
+    msg.className = 'wifi-message error';
+    return;
+  }
+
+  msg.textContent = '正在保存...';
+  msg.className = 'wifi-message';
+
+  try {
+    const r = await fetch('/wifi_config.json', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ssid: ssid, password: pass})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      msg.textContent = '✅ WiFi 配置已保存，正在连接 ' + ssid + '...';
+      msg.className = 'wifi-message success';
+    } else {
+      msg.textContent = '保存失败';
+      msg.className = 'wifi-message error';
+    }
+  } catch(e) {
+    msg.textContent = '网络错误: ' + e.message;
+    msg.className = 'wifi-message error';
+  }
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
