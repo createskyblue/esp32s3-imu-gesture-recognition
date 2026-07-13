@@ -314,6 +314,19 @@ class ComponentBoundaryTests(unittest.TestCase):
 
         self.assertEqual([], matches_in(platform_entrypoints, re.compile(r"sd_logger")))
 
+    def test_default_platform_does_not_start_sd_card(self):
+        main_source = (PROJECT_ROOT / "main" / "main.c").read_text(
+            encoding="utf-8"
+        )
+        main_cmake = (PROJECT_ROOT / "main" / "CMakeLists.txt").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotRegex(main_source, r'(?m)^#include\s+"sd_card\.h"$')
+        self.assertNotIn("sd_card_init()", main_source)
+        self.assertNotRegex(main_cmake, r"\bsd_card\b")
+        self.assertTrue((PROJECT_ROOT / "components" / "sd_card" / "sd_card.c").exists())
+
     def test_wifi_provisioning_example_is_json_not_compile_time_macros(self):
         header_example = PROJECT_ROOT / "main" / "wifi_config.example.h"
         json_example = PROJECT_ROOT / "main" / "wifi_config.example.json"

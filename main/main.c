@@ -6,7 +6,6 @@
 
 #include "app_storage.h"
 #include "hello_web.h"
-#include "sd_card.h"
 #include "web_platform.h"
 #include "wifi_config_store.h"
 #include "wifi_manager.h"
@@ -44,12 +43,6 @@ void app_main(void)
         }
         ESP_LOGW(TAG, "WiFi initialization incomplete: %s; provisioning AP remains active",
                  esp_err_to_name(wifi_err));
-    }
-
-    /* SD card is optional — log error but don't halt */
-    esp_err_t sd_err = sd_card_init();
-    if (sd_err != ESP_OK) {
-        ESP_LOGW(TAG, "SD card init failed: %s (continuing without SD)", esp_err_to_name(sd_err));
     }
 
     /* ── 平台基础 Web 服务（HTTP + OTA + 文件管理） ───────── */
