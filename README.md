@@ -10,7 +10,7 @@
 | **Web 配网** | 网页端输入 SSID/密码，配置持久化到 LittleFS，自动重连 |
 | **Captive Portal** | DNS 劫持，手机连上 AP 后自动弹出配网页面 |
 | **LittleFS** | 1 MB 内部闪存文件系统，存放网页和配置文件 |
-| **SD 卡** | SPI 模式，FAT 文件系统，支持热插拔（可选，失败不阻塞启动） |
+| **SD 卡（可选）** | 独立 SPI/FAT 驱动；默认固件不初始化、不占用 SD GPIO |
 | **文件管理器** | Web 界面浏览/上传/下载/删除/新建文件夹，支持内部 Flash 和 SD 卡双存储 |
 | **OTA 升级** | 支持固件 + 文件系统远程升级，也支持网页直接上传刷写 |
 | **SD 日志（可选）** | 独立的 ESP_LOG 双写组件；默认固件不初始化、不接管全局日志输出 |
@@ -94,7 +94,7 @@ idf.py -p COMx flash monitor
 ├── partitions.csv              # OTA 分区表 (app×2 + LittleFS)
 ├── sdkconfig.defaults          # ESP-IDF 默认配置
 ├── main/                       # 应用层（基础设施编排 + 业务端点）
-│   ├── main.c                  # 入口：LittleFS → WiFi配置 → WiFi → SD卡 → Web
+│   ├── main.c                  # 入口：LittleFS → WiFi配置 → WiFi → Web
 │   ├── app_storage.c/.h        # 应用存储所有者：挂载 LittleFS
 │   ├── wifi_config_store.c/.h  # WiFi 凭据 JSON 读写（应用层）
 │   ├── web_platform.c/.h       # HTTP 服务器 + 页面路由 + Web 组件编排
@@ -104,7 +104,7 @@ idf.py -p COMx flash monitor
 │   ├── index.html              # 仪表盘首页
 │   └── files.html              # 文件管理器页面
 └── components/
-    ├── wifi_manager/           # WiFi APSTA + DNS 劫持 + SNTP（凭据由调用方传入）
+    ├── wifi_manager/           # WiFi APSTA + 可选 DNS/SNTP（启动策略由调用方传入）
     ├── ota_manager/            # OTA 状态机 + 下载刷写 + 上传逻辑
     ├── file_manager/           # Web 文件管理器 API
     ├── led_task/               # 可选的独立四路 LED 驱动（默认未启用）
@@ -138,7 +138,9 @@ idf.py -p COMx flash monitor
 
 ### WiFi 凭据边界
 
-默认启动流程先挂载 LittleFS，再由应用层读取 `/littlefs/wifi_config.json`，最后通过 `wifi_manager_config_t` 把凭据传给 `wifi_manager_init()`。WiFi 组件本身不读取文件、不解析 JSON，也不支持 `wifi_config.h` 宏配置。
+默认启动流程先挂载 LittleFS，再由应用层把 `/littlefs/wifi_config.json` 读入 `wifi_manager_config_t.sta`，最后把完整启动配置传给 `wifi_manager_init()`。STA 凭据使用独立的 `wifi_manager_credentials_t`，网页运行时配网只能更新 STA，不会覆盖 AP、DNS 或 SNTP 策略。WiFi 组件本身不读取文件、不解析 JSON，也不支持 `wifi_config.h` 宏配置。
+
+AP 名称和密码、信道、最大客户端数、是否启用 captive-portal DNS 以及 SNTP 服务器均在 `main/main.c` 的启动配置中给出，应用可在初始化前直接调整，无需修改 `wifi_manager` 组件。
 
 LittleFS 的挂载和并发访问统一由应用层 `app_storage` 管理。文件系统 OTA 只接收应用传入的分区标签和“卸载/重挂载”回调，`ota_manager` 不再自行依赖 LittleFS；配置保存、静态文件和文件管理请求与 OTA 擦写使用同一存储租约，避免同时访问底层分区。
 
@@ -149,6 +151,21 @@ WiFi 配置更新采用“临时文件写入并同步 → 应用运行时配置 
 ```bash
 cp main/wifi_config.example.json data/wifi_config.json
 ```
+
+### 可选启用 SD 卡
+
+默认固件不会初始化 `sd_card`。需要文件管理器访问 SD 卡时，在 `main/CMakeLists.txt` 的 `REQUIRES` 中添加 `sd_card`，然后在 `web_platform_init()` 之前显式初始化：
+
+```c
+#include "sd_card.h"
+
+esp_err_t sd_err = sd_card_init();
+if (sd_err != ESP_OK) {
+    ESP_LOGW(TAG, "SD card init failed: %s", esp_err_to_name(sd_err));
+}
+```
+
+文件管理器的内部存储分区、内部挂载点和可选 SD 挂载点由应用层传入；未挂载 SD 时只会报告该后端不可用。
 
 ### 可选启用 SD 日志
 
