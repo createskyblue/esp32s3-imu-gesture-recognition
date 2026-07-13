@@ -1,8 +1,11 @@
 #include "web_platform.h"
 #include "file_manager.h"
 #include "ota_manager.h"
+#include "app_storage.h"
+#include "wifi_config_store.h"
 #include "wifi_manager.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,35 +14,73 @@
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
-#include "esp_littlefs.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "led_task.h"
 
 /* ── constants ─────────────────────────────────────────────────────────── */
-#define LITTLEFS_BASE_PATH           "/littlefs"
-#define LITTLEFS_INDEX_PATH          LITTLEFS_BASE_PATH "/index.html"
+#define LITTLEFS_INDEX_PATH          APP_LITTLEFS_BASE_PATH "/index.html"
 #define HTTP_FILE_BUFFER_BYTES       1024u
 #define HTTP_JSON_BUFFER_BYTES       512u
 
 static const char *TAG = "WEB_PLATFORM";
+static const char FILESYSTEM_RECOVERY_HTML[] =
+    "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+    "<title>文件系统恢复</title><body><h1>文件系统不可用</h1>"
+    "<p>设备已进入 AP + OTA 恢复模式。请选择有效的 LittleFS 镜像重新上传。</p>"
+    "<input id=\"image\" type=\"file\"><button onclick=\"recover()\">上传并恢复</button>"
+    "<pre id=\"status\"></pre><script>async function recover(){const f=image.files[0];"
+    "if(!f){status.textContent='请选择镜像';return;}status.textContent='上传中…';"
+    "try{const r=await fetch('/ota/upload/filesystem',{method:'POST',body:f});"
+    "status.textContent=await r.text();}catch(e){status.textContent=String(e);}}</script>"
+    "</body></html>";
 
 /* ── HTTP server handle ────────────────────────────────────────────────── */
 static httpd_handle_t s_http_server;
 
-/* ── helpers ───────────────────────────────────────────────────────────── */
-static void blue_data_blink(void)
+static const char *protect_wifi_config(const char *fs_type, const char *path)
 {
-    const led_cmd_t cmd = { .led = LED_BLUE, .type = LED_CMD_ONESHOT, .on_ms = 100 };
-    led_send_cmd(&cmd);
+    if (fs_type != NULL && strcmp(fs_type, "internal") == 0 &&
+        wifi_config_store_is_path(path)) {
+        return "WiFi configuration is application-private";
+    }
+    return NULL;
+}
+
+static bool resolve_static_path(const char *uri, char *path, size_t path_size)
+{
+    if (uri == NULL || path == NULL || path_size == 0u || uri[0] != '/') {
+        return false;
+    }
+
+    const size_t uri_length = strcspn(uri, "?#");
+    if (uri_length <= 1u) return false;
+
+    size_t segment_start = 1u;
+    for (size_t i = 1u; i <= uri_length; ++i) {
+        if (i != uri_length && uri[i] != '/') continue;
+
+        const size_t segment_length = i - segment_start;
+        if (segment_length == 0u ||
+            (segment_length == 1u && uri[segment_start] == '.') ||
+            (segment_length == 2u && uri[segment_start] == '.' &&
+             uri[segment_start + 1u] == '.') ||
+            memchr(uri + segment_start, '\\', segment_length) != NULL) {
+            return false;
+        }
+        segment_start = i + 1u;
+    }
+
+    const int length = snprintf(path, path_size, "%s%.*s",
+                                APP_LITTLEFS_BASE_PATH, (int)uri_length, uri);
+    return length >= 0 && (size_t)length < path_size;
 }
 
 esp_err_t send_json_text(httpd_req_t *req, const char *json)
 {
-    blue_data_blink();
     httpd_resp_set_type(req, "application/json; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store, max-age=0");
     return httpd_resp_sendstr(req, json != NULL ? json : "{}");
@@ -82,29 +123,6 @@ esp_err_t receive_json_body(httpd_req_t *req, char *buffer, size_t buffer_size)
     return ESP_OK;
 }
 
-/* ── LittleFS ──────────────────────────────────────────────────────────── */
-static esp_err_t littlefs_init(void)
-{
-    const esp_vfs_littlefs_conf_t conf = {
-        .base_path = LITTLEFS_BASE_PATH,
-        .partition_label = "storage",
-        .format_if_mount_failed = false,
-        .dont_mount = false,
-    };
-    esp_err_t err = esp_vfs_littlefs_register(&conf);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "LittleFS mount failed: %s", esp_err_to_name(err));
-        return err;
-    }
-    size_t total = 0u, used = 0u;
-    err = esp_littlefs_info(conf.partition_label, &total, &used);
-    if (err != ESP_OK)
-        ESP_LOGW(TAG, "LittleFS info failed: %s", esp_err_to_name(err));
-    else
-        ESP_LOGI(TAG, "LittleFS mounted: total=%u used=%u", (unsigned)total, (unsigned)used);
-    return ESP_OK;
-}
-
 /* ══════════════════════════════════════════════════════════════════════════
  * HTTP handlers
  * ══════════════════════════════════════════════════════════════════════════ */
@@ -112,8 +130,19 @@ static esp_err_t littlefs_init(void)
 /* ── GET / ─────────────────────────────────────────────────────────────── */
 static esp_err_t root_handler(httpd_req_t *req)
 {
+    if (app_storage_try_acquire() != ESP_OK) {
+        if (ota_manager_is_busy()) {
+            httpd_resp_set_status(req, "503 Service Unavailable");
+            return httpd_resp_sendstr(req, "filesystem OTA is in progress");
+        }
+        httpd_resp_set_type(req, "text/html; charset=utf-8");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store, max-age=0");
+        return httpd_resp_sendstr(req, FILESYSTEM_RECOVERY_HTML);
+    }
+
     FILE *file = fopen(LITTLEFS_INDEX_PATH, "r");
     if (file == NULL) {
+        app_storage_release();
         ESP_LOGE(TAG, "failed to open %s", LITTLEFS_INDEX_PATH);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "index.html not found");
         return ESP_FAIL;
@@ -129,6 +158,7 @@ static esp_err_t root_handler(httpd_req_t *req)
         if (err != ESP_OK) break;
     }
     fclose(file);
+    app_storage_release();
     if (err == ESP_OK) err = httpd_resp_send_chunk(req, NULL, 0);
     return err;
 }
@@ -137,10 +167,23 @@ static esp_err_t root_handler(httpd_req_t *req)
 static esp_err_t littlefs_static_handler(httpd_req_t *req)
 {
     char path[576];
-    snprintf(path, sizeof(path), "%s%s", LITTLEFS_BASE_PATH, req->uri);
+    if (!resolve_static_path(req->uri, path, sizeof(path))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid static path");
+        return ESP_FAIL;
+    }
+    if (wifi_config_store_is_path(path)) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "file not found");
+        return ESP_FAIL;
+    }
+
+    if (app_storage_try_acquire() != ESP_OK) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "filesystem is temporarily unavailable");
+    }
 
     FILE *file = fopen(path, "r");
     if (file == NULL) {
+        app_storage_release();
         /* Redirect unknown paths to / for captive portal detection */
         httpd_resp_set_status(req, "302 Found");
         httpd_resp_set_hdr(req, "Location", "/");
@@ -149,7 +192,7 @@ static esp_err_t littlefs_static_handler(httpd_req_t *req)
     }
 
     const char *type = "application/octet-stream";
-    const char *ext = strrchr(req->uri, '.');
+    const char *ext = strrchr(path, '.');
     if (ext) {
         if (strcasecmp(ext, ".html") == 0)      type = "text/html; charset=utf-8";
         else if (strcasecmp(ext, ".js") == 0)   type = "application/javascript";
@@ -170,6 +213,7 @@ static esp_err_t littlefs_static_handler(httpd_req_t *req)
         if (err != ESP_OK) break;
     }
     fclose(file);
+    app_storage_release();
     if (err == ESP_OK) err = httpd_resp_send_chunk(req, NULL, 0);
     return err;
 }
@@ -190,8 +234,8 @@ static esp_err_t network_json_handler(httpd_req_t *req)
     cJSON_AddStringToObject(root, "sta_ip", snap.sta_connected ? snap.sta_ip : "0.0.0.0");
     cJSON_AddStringToObject(root, "ap_ssid", wifi_manager_get_ap_ssid());
     cJSON_AddStringToObject(root, "ap_ip", snap.ap_ip);
-    cJSON_AddStringToObject(root, "config_path", wifi_manager_get_config_path());
-    cJSON_AddBoolToObject(root, "config_loaded", snap.config_loaded);
+    cJSON_AddStringToObject(root, "config_path", wifi_config_store_get_path());
+    cJSON_AddBoolToObject(root, "config_exists", wifi_config_store_exists());
 
     const esp_app_desc_t *app_desc = esp_app_get_description();
     char build_ts[32];
@@ -216,14 +260,20 @@ static esp_err_t wifi_config_get_handler(httpd_req_t *req)
     }
     cJSON_AddStringToObject(root, "ssid", snap.sta_ssid);
     cJSON_AddBoolToObject(root, "has_password", snap.has_password);
-    cJSON_AddStringToObject(root, "path", wifi_manager_get_config_path());
-    cJSON_AddBoolToObject(root, "loaded_from_file", snap.config_loaded);
+    cJSON_AddStringToObject(root, "path", wifi_config_store_get_path());
+    cJSON_AddBoolToObject(root, "config_exists", wifi_config_store_exists());
     return send_json_object(req, root);
 }
 
 /* ── POST /wifi_config.json ────────────────────────────────────────────── */
 static esp_err_t wifi_config_post_handler(httpd_req_t *req)
 {
+    if (ota_manager_is_busy()) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req,
+                                  "cannot update WiFi configuration during OTA");
+    }
+
     char body[HTTP_JSON_BUFFER_BYTES];
     if (receive_json_body(req, body, sizeof(body)) != ESP_OK) return ESP_FAIL;
 
@@ -236,9 +286,11 @@ static esp_err_t wifi_config_post_handler(httpd_req_t *req)
     cJSON *ssid_item = cJSON_GetObjectItemCaseSensitive(root, "ssid");
     cJSON *pass_item = cJSON_GetObjectItemCaseSensitive(root, "password");
     bool valid = cJSON_IsString(ssid_item) && ssid_item->valuestring != NULL &&
-                 ssid_item->valuestring[0] != '\0';
+                 ssid_item->valuestring[0] != '\0' &&
+                 strlen(ssid_item->valuestring) <= WIFI_MANAGER_SSID_MAX_BYTES;
     const char *ssid = valid ? ssid_item->valuestring : NULL;
     const char *pass = cJSON_IsString(pass_item) ? pass_item->valuestring : "";
+    valid = valid && strlen(pass) <= WIFI_MANAGER_PASSWORD_MAX_BYTES;
 
     if (!valid) {
         cJSON_Delete(root);
@@ -247,14 +299,71 @@ static esp_err_t wifi_config_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    esp_err_t err = wifi_manager_save_credentials(ssid, pass);
+    wifi_manager_config_t wifi_config = {0};
+    memcpy(wifi_config.sta_ssid, ssid, strlen(ssid) + 1u);
+    memcpy(wifi_config.sta_password, pass, strlen(pass) + 1u);
     cJSON_Delete(root);
 
+    if (app_storage_try_acquire() != ESP_OK) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req,
+                                  "filesystem update is already in progress");
+    }
+    if (ota_manager_is_busy()) {
+        app_storage_release();
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req,
+                                  "cannot update WiFi configuration during OTA");
+    }
+
+    esp_err_t err = wifi_config_store_stage(&wifi_config);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "save WiFi config failed: %s", esp_err_to_name(err));
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "failed to save wifi config");
+        (void)wifi_config_store_discard();
+        app_storage_release();
+        ESP_LOGW(TAG, "stage WiFi config failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "failed to stage wifi config");
         return ESP_FAIL;
     }
+
+    wifi_manager_config_t previous_wifi_config;
+    wifi_manager_get_config(&previous_wifi_config);
+
+    err = wifi_manager_set_credentials(&wifi_config);
+    if (err != ESP_OK) {
+        (void)wifi_config_store_discard();
+        app_storage_release();
+        ESP_LOGW(TAG, "apply WiFi config failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "failed to apply wifi config; provisioning AP remains active");
+        return ESP_FAIL;
+    }
+
+    err = wifi_config_store_commit();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "commit WiFi config failed: %s", esp_err_to_name(err));
+        (void)wifi_config_store_discard();
+        const esp_err_t rollback_err =
+            wifi_manager_set_credentials(&previous_wifi_config);
+        if (rollback_err != ESP_OK) {
+            ESP_LOGE(TAG, "rollback WiFi config failed: %s",
+                     esp_err_to_name(rollback_err));
+            const esp_err_t safe_mode_err =
+                wifi_manager_enter_provisioning_mode();
+            if (safe_mode_err != ESP_OK) {
+                ESP_LOGE(TAG, "force provisioning mode failed: %s",
+                         esp_err_to_name(safe_mode_err));
+            }
+        }
+        app_storage_release();
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+            rollback_err == ESP_OK
+                ? "failed to commit wifi config; previous config restored"
+                : "failed to commit wifi config; provisioning AP enforced");
+        return ESP_FAIL;
+    }
+
+    app_storage_release();
 
     cJSON *resp = cJSON_CreateObject();
     if (resp == NULL) {
@@ -262,8 +371,8 @@ static esp_err_t wifi_config_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
     cJSON_AddBoolToObject(resp, "ok", true);
-    cJSON_AddStringToObject(resp, "ssid", ssid);
-    cJSON_AddStringToObject(resp, "path", wifi_manager_get_config_path());
+    cJSON_AddStringToObject(resp, "ssid", wifi_config.sta_ssid);
+    cJSON_AddStringToObject(resp, "path", wifi_config_store_get_path());
     cJSON_AddStringToObject(resp, "message", "saved; reconnecting STA");
     return send_json_object(req, resp);
 }
@@ -381,8 +490,15 @@ esp_err_t web_platform_register_static_fallback(void)
 
 esp_err_t web_platform_init(void)
 {
-    ESP_ERROR_CHECK(ota_manager_init());
-    ESP_ERROR_CHECK(littlefs_init());
-    ESP_ERROR_CHECK(wifi_manager_init());
+    const ota_manager_config_t ota_config = {
+        .filesystem_partition_label = APP_LITTLEFS_PARTITION_LABEL,
+        .filesystem_update_begin = app_storage_begin_update,
+        .filesystem_update_end = app_storage_end_update,
+    };
+    ESP_ERROR_CHECK(ota_manager_init(&ota_config));
+    file_manager_set_access_callbacks(app_storage_try_acquire,
+                                      app_storage_release);
+    file_manager_set_read_guard(protect_wifi_config);
+    file_manager_set_mutation_guard(protect_wifi_config);
     return start_webserver();
 }

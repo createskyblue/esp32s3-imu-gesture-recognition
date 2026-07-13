@@ -33,6 +33,21 @@ static const char *TAG = "FILE_MGR";
 #define SD_MOUNT_POINT          "/sdcard"
 
 static file_manager_mutation_guard_t s_mutation_guard = NULL;
+static file_manager_read_guard_t s_read_guard = NULL;
+static file_manager_access_begin_t s_access_begin = NULL;
+static file_manager_access_end_t s_access_end = NULL;
+
+void file_manager_set_access_callbacks(file_manager_access_begin_t begin,
+                                       file_manager_access_end_t end)
+{
+    s_access_begin = begin;
+    s_access_end = end;
+}
+
+void file_manager_set_read_guard(file_manager_read_guard_t guard)
+{
+    s_read_guard = guard;
+}
 
 void file_manager_set_mutation_guard(file_manager_mutation_guard_t guard)
 {
@@ -241,9 +256,32 @@ static const char *mutation_denied(const char *fs_type, const char *resolved)
     return s_mutation_guard != NULL ? s_mutation_guard(fs_type, resolved) : NULL;
 }
 
+static const char *read_denied(const char *fs_type, const char *resolved)
+{
+    return s_read_guard != NULL ? s_read_guard(fs_type, resolved) : NULL;
+}
+
+static esp_err_t send_forbidden(httpd_req_t *req, const char *reason);
+
+static esp_err_t begin_file_access(httpd_req_t *req)
+{
+    if (s_access_begin == NULL) return ESP_OK;
+    const esp_err_t err = s_access_begin();
+    if (err == ESP_OK) return ESP_OK;
+
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    (void)httpd_resp_sendstr(req, "filesystem is temporarily unavailable");
+    return err;
+}
+
+static void end_file_access(void)
+{
+    if (s_access_end != NULL) s_access_end();
+}
+
 /* ── handler: serve files.html ─────────────────────────────────────── */
 
-static esp_err_t file_manager_page_handler(httpd_req_t *req)
+static esp_err_t file_manager_page_handler_unlocked(httpd_req_t *req)
 {
     FILE *file = fopen(LITTLEFS_MOUNT_POINT "/files.html", "r");
     if (file == NULL) {
@@ -267,6 +305,14 @@ static esp_err_t file_manager_page_handler(httpd_req_t *req)
     if (err == ESP_OK) {
         httpd_resp_send_chunk(req, NULL, 0);
     }
+    return err;
+}
+
+static esp_err_t file_manager_page_handler(httpd_req_t *req)
+{
+    if (begin_file_access(req) != ESP_OK) return ESP_OK;
+    const esp_err_t err = file_manager_page_handler_unlocked(req);
+    end_file_access();
     return err;
 }
 
@@ -294,6 +340,11 @@ static esp_err_t file_manager_list_action(httpd_req_t *req, const cJSON *root)
                                   NULL) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid path");
         return ESP_FAIL;
+    }
+
+    const char *denied = read_denied(fs_type, resolved);
+    if (denied != NULL) {
+        return send_forbidden(req, denied);
     }
 
     uint64_t total_bytes = 0, free_bytes = 0;
@@ -377,6 +428,10 @@ static esp_err_t file_manager_list_action(httpd_req_t *req, const cJSON *root)
             char full_path[FILE_MGR_MAX_PATH + 256];
             snprintf(full_path, sizeof(full_path), "%s/%s", resolved, entry->d_name);
 
+            if (read_denied(fs_type, full_path) != NULL) {
+                continue;
+            }
+
             cJSON *item = cJSON_CreateObject();
             cJSON_AddStringToObject(item, "name", entry->d_name);
 
@@ -455,6 +510,11 @@ static esp_err_t file_manager_download_action(httpd_req_t *req,
                                   NULL) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid path");
         return ESP_FAIL;
+    }
+
+    const char *denied = read_denied(fs_type, resolved);
+    if (denied != NULL) {
+        return send_forbidden(req, denied);
     }
 
     struct stat st;
@@ -541,7 +601,7 @@ static void url_decode(char *str)
     *dst = '\0';
 }
 
-static esp_err_t file_manager_download_get_handler(httpd_req_t *req)
+static esp_err_t file_manager_download_get_handler_unlocked(httpd_req_t *req)
 {
     size_t query_len = httpd_req_get_url_query_len(req);
     if (query_len == 0 || query_len >= FILE_MGR_MAX_PATH * 2) {
@@ -573,6 +633,11 @@ static esp_err_t file_manager_download_get_handler(httpd_req_t *req)
     if (validate_and_resolve_path(fs_type, raw_path, resolved, sizeof(resolved), NULL) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid path");
         return ESP_FAIL;
+    }
+
+    const char *denied = read_denied(fs_type, resolved);
+    if (denied != NULL) {
+        return send_forbidden(req, denied);
     }
 
     struct stat st;
@@ -632,6 +697,14 @@ static esp_err_t file_manager_download_get_handler(httpd_req_t *req)
         err = httpd_resp_send_chunk(req, NULL, 0);
     }
 
+    return err;
+}
+
+static esp_err_t file_manager_download_get_handler(httpd_req_t *req)
+{
+    if (begin_file_access(req) != ESP_OK) return ESP_OK;
+    const esp_err_t err = file_manager_download_get_handler_unlocked(req);
+    end_file_access();
     return err;
 }
 
@@ -713,6 +786,11 @@ static esp_err_t file_manager_mkdir_action(httpd_req_t *req,
                                   sizeof(resolved), NULL) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid path");
         return ESP_FAIL;
+    }
+
+    const char *denied = mutation_denied(fs_type, resolved);
+    if (denied != NULL) {
+        return send_forbidden(req, denied);
     }
 
     struct stat st;
@@ -896,7 +974,7 @@ static esp_err_t file_manager_upload_action(httpd_req_t *req)
 
 /* ── unified API dispatcher ────────────────────────────────────────── */
 
-static esp_err_t file_manager_api_handler(httpd_req_t *req)
+static esp_err_t file_manager_api_handler_unlocked(httpd_req_t *req)
 {
     char content_type[48] = {0};
     if (httpd_req_get_hdr_value_str(req, "Content-Type", content_type,
@@ -937,6 +1015,14 @@ static esp_err_t file_manager_api_handler(httpd_req_t *req)
         err = ESP_FAIL;
     }
     cJSON_Delete(root);
+    return err;
+}
+
+static esp_err_t file_manager_api_handler(httpd_req_t *req)
+{
+    if (begin_file_access(req) != ESP_OK) return ESP_OK;
+    const esp_err_t err = file_manager_api_handler_unlocked(req);
+    end_file_access();
     return err;
 }
 

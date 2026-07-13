@@ -172,8 +172,7 @@ static void led_task(void *arg)
 
 void led_send_cmd(const led_cmd_t *cmd)
 {
-    if (s_queue == NULL || cmd == NULL ||
-        cmd->led == LED_GREEN || cmd->led >= LED_COUNT) {
+    if (s_queue == NULL || cmd == NULL || cmd->led >= LED_COUNT) {
         return;
     }
     const TickType_t now = xTaskGetTickCount();
@@ -196,24 +195,7 @@ void led_fatal_error(void)
 
 esp_err_t led_task_init(void)
 {
-    /* 绿灯：仅空闲钩子直控，不参与队列管理 */
-    {
-        gpio_config_t conf = {
-            .pin_bit_mask = (1ULL << LED_GREEN_GPIO),
-            .mode = GPIO_MODE_OUTPUT,
-            .pull_up_en = GPIO_PULLUP_DISABLE,
-            .pull_down_en = GPIO_PULLDOWN_DISABLE,
-            .intr_type = GPIO_INTR_DISABLE,
-        };
-        ESP_ERROR_CHECK(gpio_config(&conf));
-        gpio_set_level(LED_GREEN_GPIO, LED_INACTIVE_LEVEL);
-    }
-
-    /* 红灯、黄灯、蓝灯：队列管理 */
     for (int i = 0; i < LED_COUNT; ++i) {
-        if (i == LED_GREEN) {
-            continue;
-        }
         gpio_config_t io_conf = {
             .pin_bit_mask = (1ULL << s_gpio[i]),
             .mode = GPIO_MODE_OUTPUT,

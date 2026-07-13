@@ -30,8 +30,24 @@ typedef struct {
     bool reboot_required;
 } ota_status_t;
 
-/** Create the OTA mutex. Call once before any other ota_manager API. */
-esp_err_t ota_manager_init(void);
+typedef esp_err_t (*ota_filesystem_update_callback_t)(void *context);
+
+/**
+ * Application-provided storage lifecycle used only for filesystem OTA.
+ * A successful begin is paired with end from the same OTA task.
+ */
+typedef struct {
+    const char *filesystem_partition_label;
+    ota_filesystem_update_callback_t filesystem_update_begin;
+    ota_filesystem_update_callback_t filesystem_update_end;
+    void *context;
+} ota_manager_config_t;
+
+/**
+ * Create OTA state and copy application-provided filesystem update hooks.
+ * Pass NULL to support firmware OTA only.
+ */
+esp_err_t ota_manager_init(const ota_manager_config_t *config);
 
 /**
  * Register all OTA HTTP handlers on the given server.

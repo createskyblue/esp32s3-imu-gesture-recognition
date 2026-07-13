@@ -4,37 +4,55 @@
 #include <stdlib.h>
 #include <time.h>
 
-#include "driver/gpio.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "led_task.h"
-#include "sd_card.h"
-#include "sd_logger.h"
-#include "web_platform.h"
+#include "app_storage.h"
 #include "hello_web.h"
+#include "sd_card.h"
+#include "web_platform.h"
+#include "wifi_config_store.h"
+#include "wifi_manager.h"
 
 static const char *TAG = "MAIN";
 
 void app_main(void)
 {
+    const esp_err_t storage_err = app_storage_init();
+    if (storage_err != ESP_OK) {
+        ESP_LOGE(TAG, "LittleFS unavailable: %s; starting AP + OTA recovery mode",
+                 esp_err_to_name(storage_err));
+    }
+
     /* Set timezone to UTC+8 (China Standard Time) */
     setenv("TZ", "CST-8", 1);
     tzset();
 
-    ESP_ERROR_CHECK(led_task_init());
+    wifi_manager_config_t wifi_config = {0};
+    esp_err_t config_err = storage_err == ESP_OK
+        ? wifi_config_store_load(&wifi_config) : storage_err;
+    if (config_err == ESP_ERR_NOT_FOUND) {
+        ESP_LOGI(TAG, "WiFi config not found at %s; starting provisioning AP",
+                 wifi_config_store_get_path());
+    } else if (config_err != ESP_OK) {
+        ESP_LOGW(TAG, "WiFi config load failed: %s; starting provisioning AP",
+                 esp_err_to_name(config_err));
+    }
+    esp_err_t wifi_err = wifi_manager_init(&wifi_config);
+    if (wifi_err != ESP_OK) {
+        if (!wifi_manager_is_started()) {
+            ESP_LOGE(TAG, "WiFi initialization failed: %s",
+                     esp_err_to_name(wifi_err));
+            return;
+        }
+        ESP_LOGW(TAG, "WiFi initialization incomplete: %s; provisioning AP remains active",
+                 esp_err_to_name(wifi_err));
+    }
 
     /* SD card is optional — log error but don't halt */
     esp_err_t sd_err = sd_card_init();
     if (sd_err != ESP_OK) {
         ESP_LOGW(TAG, "SD card init failed: %s (continuing without SD)", esp_err_to_name(sd_err));
-    } else {
-        esp_err_t log_err = sd_logger_init();
-        if (log_err != ESP_OK) {
-            ESP_LOGW(TAG, "SD logger init failed: %s", esp_err_to_name(log_err));
-        }
     }
 
-    /* ── 平台基础 Web 服务（WiFi + LittleFS + OTA + 文件管理） ── */
+    /* ── 平台基础 Web 服务（HTTP + OTA + 文件管理） ───────── */
     ESP_ERROR_CHECK(web_platform_init());
 
     /* ── 自定义业务端点 ────────────────────────────────────── */
@@ -44,18 +62,4 @@ void app_main(void)
     ESP_ERROR_CHECK(web_platform_register_static_fallback());
 
     ESP_LOGI(TAG, "all tasks started");
-}
-
-/* ── 空闲钩子：绿灯系统存活指示 ────────────────────────────────────── */
-void vApplicationIdleHook(void)
-{
-    static TickType_t last_toggle_tick = 0;
-    static bool led_state = false;
-
-    const TickType_t now = xTaskGetTickCount();
-    if ((now - last_toggle_tick) >= pdMS_TO_TICKS(500)) {
-        led_state = !led_state;
-        gpio_set_level(GPIO_NUM_6, led_state ? 0 : 1);  /* 低电平激活 */
-        last_toggle_tick = now;
-    }
 }

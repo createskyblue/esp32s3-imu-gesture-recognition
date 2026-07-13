@@ -25,7 +25,10 @@ typedef struct {
     uint32_t on_ms;
 } led_cmd_t;
 
+/** Configure all four LED GPIOs and start the command task. */
 esp_err_t led_task_init(void);
+
+/** Queue a command after led_task_init(); commands are ignored before init. */
 void led_send_cmd(const led_cmd_t *cmd);
 
 /** Immediately turn on the red LED (call from fatal-error paths before reboot). */

@@ -7,7 +7,6 @@
 #include "cJSON.h"
 #include "esp_err.h"
 #include "esp_log.h"
-#include "esp_littlefs.h"
 #include "esp_ota_ops.h"
 #include "esp_ota_service.h"
 #include "esp_partition.h"
@@ -25,7 +24,7 @@ static const char *TAG = "OTA_MGR";
 #define OTA_TASK_STACK_BYTES 8192u
 #define OTA_TASK_PRIORITY    4u
 #define OTA_UPLOAD_BUF_SIZE  4096u
-#define LITTLEFS_BASE_PATH   "/littlefs"
+#define OTA_PARTITION_LABEL_MAX_BYTES 16u
 
 /* ── internal state ────────────────────────────────────────────────────── */
 typedef enum {
@@ -52,11 +51,18 @@ typedef struct {
 
 static SemaphoreHandle_t s_mutex;
 static ota_state_t s_state = { .phase = OTA_UPDATE_IDLE, .message = "idle" };
+static struct {
+    char filesystem_partition_label[OTA_PARTITION_LABEL_MAX_BYTES + 1u];
+    ota_filesystem_update_callback_t filesystem_update_begin;
+    ota_filesystem_update_callback_t filesystem_update_end;
+    void *context;
+} s_config;
 
 /* For synchronous upload operations */
 static esp_ota_handle_t       s_upload_ota_handle;
 static const esp_partition_t *s_upload_partition;
 static uint32_t               s_upload_write_offset;
+static bool                   s_upload_fs_active;
 
 /* ── helpers ───────────────────────────────────────────────────────────── */
 static void copy_str(char *dest, size_t dest_size, const char *src)
@@ -71,25 +77,23 @@ static void unlock(void) { if (s_mutex) xSemaphoreGive(s_mutex); }
 
 static void set_message(const char *msg) { copy_str(s_state.message, sizeof(s_state.message), msg); }
 
-static const char *phase_name(ota_update_phase_t p)
+static bool filesystem_update_configured(void)
 {
-    switch (p) {
-    case OTA_UPDATE_IDLE:    return "idle";
-    case OTA_UPDATE_RUNNING: return "running";
-    case OTA_UPDATE_DONE:    return "done";
-    case OTA_UPDATE_FAILED:  return "failed";
-    default:                 return "unknown";
-    }
+    return s_config.filesystem_partition_label[0] != '\0' &&
+           s_config.filesystem_update_begin != NULL &&
+           s_config.filesystem_update_end != NULL;
 }
 
-static bool json_optional_url(cJSON *root, const char *key, char *dest, size_t dest_size)
+static esp_err_t begin_filesystem_update(void)
 {
-    cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
-    if (item == NULL || cJSON_IsNull(item)) { dest[0] = '\0'; return true; }
-    if (!cJSON_IsString(item) || item->valuestring == NULL || strlen(item->valuestring) >= dest_size)
-        return false;
-    copy_str(dest, dest_size, item->valuestring);
-    return true;
+    if (!filesystem_update_configured()) return ESP_ERR_NOT_SUPPORTED;
+    return s_config.filesystem_update_begin(s_config.context);
+}
+
+static esp_err_t end_filesystem_update(void)
+{
+    if (!filesystem_update_configured()) return ESP_ERR_NOT_SUPPORTED;
+    return s_config.filesystem_update_end(s_config.context);
 }
 
 /* ── OTA service event handler ─────────────────────────────────────────── */
@@ -162,8 +166,12 @@ static esp_err_t prepare_item(esp_ota_upgrade_item_t *item, const char *label,
     if (err != ESP_OK) return err;
 
     if (filesystem) {
+        if (!filesystem_update_configured()) {
+            if (source->destroy) source->destroy(source);
+            return ESP_ERR_NOT_SUPPORTED;
+        }
         err = esp_ota_service_target_data_create(NULL, &target);
-        item->partition_label = "storage";
+        item->partition_label = s_config.filesystem_partition_label;
         item->resumable = false;
     } else {
         esp_ota_service_target_app_cfg_t app_cfg = { .bulk_flash_erase = true };
@@ -198,6 +206,13 @@ static void ota_task(void *arg)
     unlock();
 
     esp_err_t err = ESP_OK;
+    bool filesystem_update_active = false;
+    if (fs_url[0] != '\0') {
+        err = begin_filesystem_update();
+        if (err != ESP_OK) goto done;
+        filesystem_update_active = true;
+    }
+
     esp_ota_service_cfg_t cfg = ESP_OTA_SERVICE_CFG_DEFAULT();
     cfg.worker_task.stack_size = OTA_TASK_STACK_BYTES;
     cfg.worker_task.priority = OTA_TASK_PRIORITY;
@@ -236,13 +251,18 @@ static void ota_task(void *arg)
     }
 
 destroy:
-    esp_ota_service_destroy(service);
+    if (service != NULL) esp_ota_service_destroy(service);
 done:
+    if (filesystem_update_active) {
+        const esp_err_t storage_err = end_filesystem_update();
+        if (err == ESP_OK && storage_err != ESP_OK) err = storage_err;
+    }
     if (err != ESP_OK) {
         lock();
         s_state.phase = OTA_UPDATE_FAILED;
         s_state.progress = 100;
         s_state.last_error = err;
+        s_state.reboot_required = false;
         set_message(esp_err_to_name(err));
         unlock();
     }
@@ -260,9 +280,31 @@ static void restart_task(void *arg)
  * Public API
  * ══════════════════════════════════════════════════════════════════════════ */
 
-esp_err_t ota_manager_init(void)
+esp_err_t ota_manager_init(const ota_manager_config_t *config)
 {
-    if (s_mutex != NULL) return ESP_OK;
+    if (s_mutex != NULL) return ESP_ERR_INVALID_STATE;
+
+    memset(&s_config, 0, sizeof(s_config));
+    if (config != NULL) {
+        if (config->filesystem_partition_label == NULL ||
+            config->filesystem_update_begin == NULL ||
+            config->filesystem_update_end == NULL) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        const size_t label_length = strnlen(
+            config->filesystem_partition_label,
+            sizeof(s_config.filesystem_partition_label));
+        if (label_length == 0u ||
+            label_length > OTA_PARTITION_LABEL_MAX_BYTES) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        memcpy(s_config.filesystem_partition_label,
+               config->filesystem_partition_label, label_length + 1u);
+        s_config.filesystem_update_begin = config->filesystem_update_begin;
+        s_config.filesystem_update_end = config->filesystem_update_end;
+        s_config.context = config->context;
+    }
+
     s_mutex = xSemaphoreCreateMutex();
     return s_mutex ? ESP_OK : ESP_ERR_NO_MEM;
 }
@@ -294,6 +336,11 @@ bool ota_manager_is_busy(void)
 
 esp_err_t ota_manager_start_url(const char *firmware_url, const char *filesystem_url)
 {
+    if (filesystem_url != NULL && filesystem_url[0] != '\0' &&
+        !filesystem_update_configured()) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
     lock();
     if (s_state.phase == OTA_UPDATE_RUNNING) { unlock(); return ESP_ERR_INVALID_STATE; }
     s_state = (ota_state_t){
@@ -326,6 +373,10 @@ esp_err_t ota_manager_start_url(const char *firmware_url, const char *filesystem
 esp_err_t ota_manager_upload_firmware_begin(void)
 {
     lock();
+    if (s_state.phase == OTA_UPDATE_RUNNING) {
+        unlock();
+        return ESP_ERR_INVALID_STATE;
+    }
     s_state = (ota_state_t){
         .phase = OTA_UPDATE_RUNNING, .progress = 0,
         .item_count = 1, .last_error = ESP_OK,
@@ -412,6 +463,10 @@ void ota_manager_upload_firmware_abort(void)
 esp_err_t ota_manager_upload_fs_begin(void)
 {
     lock();
+    if (s_state.phase == OTA_UPDATE_RUNNING) {
+        unlock();
+        return ESP_ERR_INVALID_STATE;
+    }
     s_state = (ota_state_t){
         .phase = OTA_UPDATE_RUNNING, .progress = 0,
         .item_count = 1, .last_error = ESP_OK,
@@ -420,18 +475,27 @@ esp_err_t ota_manager_upload_fs_begin(void)
     set_message("uploading filesystem");
     unlock();
 
-    esp_err_t err = esp_vfs_littlefs_unregister("storage");
-    if (err != ESP_OK)
-        ESP_LOGW(TAG, "littlefs unregister: %s (continuing)", esp_err_to_name(err));
-
-    s_upload_partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
-                                                   ESP_PARTITION_SUBTYPE_ANY, "storage");
-    if (s_upload_partition == NULL) {
+    esp_err_t err = begin_filesystem_update();
+    if (err != ESP_OK) {
         lock();
         s_state.phase = OTA_UPDATE_FAILED;
+        s_state.last_error = err;
+        set_message("filesystem lease failed");
+        unlock();
+        return err;
+    }
+    s_upload_fs_active = true;
+
+    s_upload_partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+        ESP_PARTITION_SUBTYPE_ANY, s_config.filesystem_partition_label);
+    if (s_upload_partition == NULL) {
+        err = ESP_ERR_NOT_FOUND;
+        lock();
+        s_state.phase = OTA_UPDATE_FAILED;
+        s_state.last_error = err;
         set_message("storage partition not found");
         unlock();
-        goto remount;
+        goto release_storage;
     }
 
     ESP_LOGI(TAG, "Erasing storage partition: %u bytes", (unsigned)s_upload_partition->size);
@@ -442,27 +506,33 @@ esp_err_t ota_manager_upload_fs_begin(void)
         s_state.last_error = err;
         set_message("erase failed");
         unlock();
-        goto remount;
+        goto release_storage;
     }
 
     s_upload_write_offset = 0;
     return ESP_OK;
 
-remount:
+release_storage:
     {
-        const esp_vfs_littlefs_conf_t conf = {
-            .base_path = LITTLEFS_BASE_PATH,
-            .partition_label = "storage",
-            .format_if_mount_failed = true,
-            .dont_mount = false,
-        };
-        esp_vfs_littlefs_register(&conf);
+        const esp_err_t storage_err = end_filesystem_update();
+        s_upload_fs_active = false;
+        s_upload_partition = NULL;
+        if (err == ESP_OK) err = storage_err;
     }
-    return ESP_FAIL;
+    return err;
 }
 
 esp_err_t ota_manager_upload_fs_write(const uint8_t *data, size_t len)
 {
+    if (!s_upload_fs_active || s_upload_partition == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (data == NULL || len == 0u) return ESP_ERR_INVALID_ARG;
+    if (s_upload_write_offset > s_upload_partition->size ||
+        len > s_upload_partition->size - s_upload_write_offset) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
     esp_err_t err = esp_partition_write(s_upload_partition, s_upload_write_offset, data, len);
     if (err == ESP_OK) {
         s_upload_write_offset += (uint32_t)len;
@@ -475,7 +545,20 @@ esp_err_t ota_manager_upload_fs_write(const uint8_t *data, size_t len)
 
 esp_err_t ota_manager_upload_fs_end(void)
 {
+    if (!s_upload_fs_active) return ESP_ERR_INVALID_STATE;
+
+    const esp_err_t storage_err = end_filesystem_update();
+    s_upload_fs_active = false;
+    s_upload_partition = NULL;
+
     lock();
+    if (storage_err != ESP_OK) {
+        s_state.phase = OTA_UPDATE_FAILED;
+        s_state.last_error = storage_err;
+        set_message("filesystem remount failed");
+        unlock();
+        return storage_err;
+    }
     s_state.phase = OTA_UPDATE_DONE;
     s_state.progress = 100;
     s_state.reboot_required = true;
@@ -486,19 +569,19 @@ esp_err_t ota_manager_upload_fs_end(void)
 
 void ota_manager_upload_fs_abort(void)
 {
+    esp_err_t storage_err = ESP_OK;
+    if (s_upload_fs_active) {
+        storage_err = end_filesystem_update();
+        s_upload_fs_active = false;
+        s_upload_partition = NULL;
+    }
+
     lock();
     s_state.phase = OTA_UPDATE_FAILED;
-    s_state.last_error = ESP_FAIL;
-    set_message("filesystem upload aborted");
+    s_state.last_error = storage_err == ESP_OK ? ESP_FAIL : storage_err;
+    set_message(storage_err == ESP_OK ? "filesystem upload aborted"
+                                      : "filesystem remount failed");
     unlock();
-    /* Remount LittleFS */
-    const esp_vfs_littlefs_conf_t conf = {
-        .base_path = LITTLEFS_BASE_PATH,
-        .partition_label = "storage",
-        .format_if_mount_failed = true,
-        .dont_mount = false,
-    };
-    esp_vfs_littlefs_register(&conf);
 }
 
 /* ── restart ───────────────────────────────────────────────────────────── */

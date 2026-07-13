@@ -8,31 +8,52 @@
 extern "C" {
 #endif
 
+#define WIFI_MANAGER_SSID_MAX_BYTES     32u
+#define WIFI_MANAGER_PASSWORD_MAX_BYTES 64u
+
+/** Caller-owned startup/runtime credentials copied by wifi_manager. */
+typedef struct {
+    char sta_ssid[WIFI_MANAGER_SSID_MAX_BYTES + 1u];
+    char sta_password[WIFI_MANAGER_PASSWORD_MAX_BYTES + 1u];
+} wifi_manager_config_t;
+
 /** Immutable snapshot of current WiFi state (for HTTP handlers). */
 typedef struct {
     bool sta_connected;
     char sta_ssid[33];
     char sta_ip[16];
     char ap_ip[16];
-    bool config_loaded;
     bool has_password;
 } wifi_snapshot_t;
 
-/** Full WiFi initialisation: APSTA, DNS hijack, SNTP. */
-esp_err_t wifi_manager_init(void);
+/**
+ * Start APSTA using credentials supplied by the caller.
+ * SoftAP is started first; if the initial STA update is rejected, the function
+ * returns that error while leaving SoftAP available for provisioning.
+ */
+esp_err_t wifi_manager_init(const wifi_manager_config_t *config);
+
+/** True after APSTA mode has started, including STA-config fallback cases. */
+bool wifi_manager_is_started(void);
 
 /** Fill a point-in-time snapshot of WiFi state. */
 void wifi_manager_get_snapshot(wifi_snapshot_t *out);
 
-/**
- * Save credentials to LittleFS under /littlefs/wifi_config.json,
- * then trigger an immediate STA reconnect with the new SSID/password.
- */
-esp_err_t wifi_manager_save_credentials(const char *ssid, const char *password);
+/** Copy the currently active credentials into caller-owned storage. */
+void wifi_manager_get_config(wifi_manager_config_t *out);
 
-/** Constants exposed for JSON responses. */
+/**
+ * Copy new credentials and trigger an immediate STA reconnect.
+ * An empty SSID disables STA connection attempts while keeping SoftAP active.
+ * If the driver rejects the update, the previous credentials are restored.
+ */
+esp_err_t wifi_manager_set_credentials(const wifi_manager_config_t *config);
+
+/** Disable STA reconnects and leave the provisioning SoftAP active. */
+esp_err_t wifi_manager_enter_provisioning_mode(void);
+
+/** SoftAP SSID exposed for status responses. */
 const char *wifi_manager_get_ap_ssid(void);
-const char *wifi_manager_get_config_path(void);
 
 #ifdef __cplusplus
 }

@@ -6,9 +6,9 @@
 struct cJSON;
 
 /**
- * Initialize WiFi (AP+STA), LittleFS, SNTP, DNS hijack, and start the HTTP
- * server with all platform handlers (/network.json, /debug.json, /ota/...,
- * /wifi_config.json, /, file manager).
+ * Start the HTTP server with all platform handlers (/network.json,
+ * /debug.json, /ota/..., /wifi_config.json, /, file manager).
+ * app_storage_init() and wifi_manager_init() must already have succeeded.
  *
  * The static file fallback (catch-all) is NOT registered — call
  * web_platform_register_static_fallback() after any custom handlers.
