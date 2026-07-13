@@ -284,6 +284,21 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertIn("file_manager_set_access_callbacks(", web_source)
         self.assertIn("app_storage_try_acquire()", web_source)
 
+    def test_ota_keeps_simple_firmware_only_init_api(self):
+        ota_header = (
+            PROJECT_ROOT / "components" / "ota_manager" / "ota_manager.h"
+        ).read_text(encoding="utf-8")
+        web_source = (PROJECT_ROOT / "main" / "web_platform.c").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertRegex(ota_header, r"ota_manager_init\s*\(\s*void\s*\)")
+        self.assertRegex(
+            ota_header,
+            r"ota_manager_init_with_config\s*\(\s*const ota_manager_config_t\s*\*",
+        )
+        self.assertIn("ota_manager_init_with_config(&ota_config)", web_source)
+
     def test_file_manager_storage_locations_are_application_configured(self):
         file_header = (
             PROJECT_ROOT / "components" / "file_manager" / "file_manager.h"

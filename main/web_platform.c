@@ -502,7 +502,7 @@ esp_err_t web_platform_init(void)
         .filesystem_update_end = app_storage_end_update,
     };
     ESP_ERROR_CHECK(file_manager_set_storage_config(&file_manager_config));
-    ESP_ERROR_CHECK(ota_manager_init(&ota_config));
+    ESP_ERROR_CHECK(ota_manager_init_with_config(&ota_config));
     file_manager_set_access_callbacks(app_storage_try_acquire,
                                       app_storage_release);
     file_manager_set_read_guard(protect_wifi_config);

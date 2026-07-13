@@ -280,7 +280,12 @@ static void restart_task(void *arg)
  * Public API
  * ══════════════════════════════════════════════════════════════════════════ */
 
-esp_err_t ota_manager_init(const ota_manager_config_t *config)
+esp_err_t ota_manager_init(void)
+{
+    return ota_manager_init_with_config(NULL);
+}
+
+esp_err_t ota_manager_init_with_config(const ota_manager_config_t *config)
 {
     if (s_mutex != NULL) return ESP_ERR_INVALID_STATE;
 

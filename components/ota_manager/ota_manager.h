@@ -43,11 +43,11 @@ typedef struct {
     void *context;
 } ota_manager_config_t;
 
-/**
- * Create OTA state and copy application-provided filesystem update hooks.
- * Pass NULL to support firmware OTA only.
- */
-esp_err_t ota_manager_init(const ota_manager_config_t *config);
+/** Create OTA state for firmware-only updates. */
+esp_err_t ota_manager_init(void);
+
+/** Create OTA state with application-provided filesystem update hooks. */
+esp_err_t ota_manager_init_with_config(const ota_manager_config_t *config);
 
 /**
  * Register all OTA HTTP handlers on the given server.
