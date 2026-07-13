@@ -27,15 +27,62 @@ static const char *TAG = "FILE_MGR";
 #define FILE_MGR_UPLOAD_BUF_SIZE 65536u
 #define FILE_MGR_UPLOAD_META_MAX 768u
 #define FILE_MGR_UPLOAD_TMP_SUFFIX ".upload.tmp"
+#define FILE_MGR_MOUNT_POINT_MAX 64u
+#define FILE_MGR_PARTITION_LABEL_MAX 16u
 
-#define LITTLEFS_MOUNT_POINT    "/littlefs"
-#define LITTLEFS_PARTITION_LABEL "storage"
-#define SD_MOUNT_POINT          "/sdcard"
+static struct {
+    char internal_mount_point[FILE_MGR_MOUNT_POINT_MAX];
+    char internal_partition_label[FILE_MGR_PARTITION_LABEL_MAX + 1u];
+    char sd_mount_point[FILE_MGR_MOUNT_POINT_MAX];
+    bool configured;
+} s_storage;
 
 static file_manager_mutation_guard_t s_mutation_guard = NULL;
 static file_manager_read_guard_t s_read_guard = NULL;
 static file_manager_access_begin_t s_access_begin = NULL;
 static file_manager_access_end_t s_access_end = NULL;
+
+static bool valid_mount_point(const char *path)
+{
+    if (path == NULL || path[0] != '/') return false;
+    const size_t length = strnlen(path, FILE_MGR_MOUNT_POINT_MAX);
+    return length > 1u && length < FILE_MGR_MOUNT_POINT_MAX &&
+           path[length - 1u] != '/';
+}
+
+esp_err_t file_manager_set_storage_config(
+    const file_manager_storage_config_t *config)
+{
+    if (config == NULL ||
+        !valid_mount_point(config->internal_mount_point) ||
+        config->internal_partition_label == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const size_t label_length = strnlen(
+        config->internal_partition_label,
+        FILE_MGR_PARTITION_LABEL_MAX + 1u);
+    if (label_length == 0u || label_length > FILE_MGR_PARTITION_LABEL_MAX ||
+        (config->sd_mount_point != NULL &&
+         !valid_mount_point(config->sd_mount_point))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    snprintf(s_storage.internal_mount_point,
+             sizeof(s_storage.internal_mount_point), "%s",
+             config->internal_mount_point);
+    memcpy(s_storage.internal_partition_label,
+           config->internal_partition_label, label_length + 1u);
+    if (config->sd_mount_point != NULL) {
+        snprintf(s_storage.sd_mount_point,
+                 sizeof(s_storage.sd_mount_point), "%s",
+                 config->sd_mount_point);
+    } else {
+        s_storage.sd_mount_point[0] = '\0';
+    }
+    s_storage.configured = true;
+    return ESP_OK;
+}
 
 void file_manager_set_access_callbacks(file_manager_access_begin_t begin,
                                        file_manager_access_end_t end)
@@ -93,10 +140,14 @@ static esp_err_t validate_and_resolve_path(
 {
     const char *mount_point = NULL;
 
+    if (!s_storage.configured || fs_type == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (strcmp(fs_type, "internal") == 0) {
-        mount_point = LITTLEFS_MOUNT_POINT;
-    } else if (strcmp(fs_type, "sd") == 0) {
-        mount_point = SD_MOUNT_POINT;
+        mount_point = s_storage.internal_mount_point;
+    } else if (strcmp(fs_type, "sd") == 0 &&
+               s_storage.sd_mount_point[0] != '\0') {
+        mount_point = s_storage.sd_mount_point;
     } else {
         return ESP_ERR_INVALID_ARG;
     }
@@ -141,7 +192,8 @@ static esp_err_t get_filesystem_info(
 
     if (strcmp(fs_type, "internal") == 0) {
         size_t total = 0, used = 0;
-        esp_err_t err = esp_littlefs_info(LITTLEFS_PARTITION_LABEL, &total, &used);
+        esp_err_t err = esp_littlefs_info(
+            s_storage.internal_partition_label, &total, &used);
         if (err != ESP_OK) return err;
         *total_bytes = total;
         *free_bytes = (total > used) ? (total - used) : 0;
@@ -151,12 +203,14 @@ static esp_err_t get_filesystem_info(
 
     if (strcmp(fs_type, "sd") == 0) {
         struct stat st;
-        if (stat(SD_MOUNT_POINT, &st) != 0) {
+        if (s_storage.sd_mount_point[0] == '\0' ||
+            stat(s_storage.sd_mount_point, &st) != 0) {
             *mounted = false;
             return ESP_ERR_NOT_FOUND;
         }
         uint64_t total = 0, free_space = 0;
-        esp_err_t err = esp_vfs_fat_info(SD_MOUNT_POINT, &total, &free_space);
+        esp_err_t err = esp_vfs_fat_info(
+            s_storage.sd_mount_point, &total, &free_space);
         if (err != ESP_OK) return err;
         *total_bytes = total;
         *free_bytes = free_space;
@@ -283,7 +337,16 @@ static void end_file_access(void)
 
 static esp_err_t file_manager_page_handler_unlocked(httpd_req_t *req)
 {
-    FILE *file = fopen(LITTLEFS_MOUNT_POINT "/files.html", "r");
+    char page_path[FILE_MGR_MOUNT_POINT_MAX + sizeof("/files.html")];
+    const int path_length = snprintf(page_path, sizeof(page_path),
+                                     "%s/files.html",
+                                     s_storage.internal_mount_point);
+    if (path_length < 0 || (size_t)path_length >= sizeof(page_path)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "files.html path is invalid");
+        return ESP_FAIL;
+    }
+    FILE *file = fopen(page_path, "r");
     if (file == NULL) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "files.html not found");
@@ -1030,6 +1093,9 @@ static esp_err_t file_manager_api_handler(httpd_req_t *req)
 
 esp_err_t file_manager_register(httpd_handle_t server)
 {
+    if (server == NULL || !s_storage.configured) {
+        return ESP_ERR_INVALID_STATE;
+    }
     const httpd_uri_t page_uri = {
         .uri = "/files",
         .method = HTTP_GET,

@@ -22,6 +22,7 @@
 
 /* ── constants ─────────────────────────────────────────────────────────── */
 #define LITTLEFS_INDEX_PATH          APP_LITTLEFS_BASE_PATH "/index.html"
+#define OPTIONAL_SD_MOUNT_POINT      "/sdcard"
 #define HTTP_FILE_BUFFER_BYTES       1024u
 #define HTTP_JSON_BUFFER_BYTES       512u
 
@@ -490,11 +491,17 @@ esp_err_t web_platform_register_static_fallback(void)
 
 esp_err_t web_platform_init(void)
 {
+    const file_manager_storage_config_t file_manager_config = {
+        .internal_mount_point = APP_LITTLEFS_BASE_PATH,
+        .internal_partition_label = APP_LITTLEFS_PARTITION_LABEL,
+        .sd_mount_point = OPTIONAL_SD_MOUNT_POINT,
+    };
     const ota_manager_config_t ota_config = {
         .filesystem_partition_label = APP_LITTLEFS_PARTITION_LABEL,
         .filesystem_update_begin = app_storage_begin_update,
         .filesystem_update_end = app_storage_end_update,
     };
+    ESP_ERROR_CHECK(file_manager_set_storage_config(&file_manager_config));
     ESP_ERROR_CHECK(ota_manager_init(&ota_config));
     file_manager_set_access_callbacks(app_storage_try_acquire,
                                       app_storage_release);

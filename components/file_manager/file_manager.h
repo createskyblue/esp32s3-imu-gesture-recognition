@@ -2,6 +2,17 @@
 
 #include "esp_http_server.h"
 
+/** Application-owned filesystem locations used by the HTTP file manager. */
+typedef struct {
+    const char *internal_mount_point;
+    const char *internal_partition_label;
+    const char *sd_mount_point;
+} file_manager_storage_config_t;
+
+/** Copy filesystem locations before registering HTTP handlers. */
+esp_err_t file_manager_set_storage_config(
+    const file_manager_storage_config_t *config);
+
 /** Optional lease around each complete file-manager HTTP operation. */
 typedef esp_err_t (*file_manager_access_begin_t)(void);
 typedef void (*file_manager_access_end_t)(void);

@@ -247,6 +247,27 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertIn("file_manager_set_access_callbacks(", web_source)
         self.assertIn("app_storage_try_acquire()", web_source)
 
+    def test_file_manager_storage_locations_are_application_configured(self):
+        file_header = (
+            PROJECT_ROOT / "components" / "file_manager" / "file_manager.h"
+        ).read_text(encoding="utf-8")
+        file_source = (
+            PROJECT_ROOT / "components" / "file_manager" / "file_manager.c"
+        ).read_text(encoding="utf-8")
+        web_source = (PROJECT_ROOT / "main" / "web_platform.c").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("file_manager_storage_config_t", file_header)
+        self.assertIn("file_manager_set_storage_config", file_header)
+        for concrete_value in ['"/littlefs"', '"/sdcard"', '"storage"']:
+            self.assertNotIn(concrete_value, file_source)
+        self.assertIn("file_manager_set_storage_config(&file_manager_config)", web_source)
+        self.assertLess(
+            web_source.index("file_manager_set_storage_config(&file_manager_config)"),
+            web_source.index("start_webserver()"),
+        )
+
     def test_corrupt_filesystem_still_allows_ota_recovery(self):
         storage_source = (PROJECT_ROOT / "main" / "app_storage.c").read_text(
             encoding="utf-8"
