@@ -26,19 +26,21 @@ static bool json_string(cJSON *root, const char *key,
     return true;
 }
 
-static bool config_is_valid(const wifi_manager_config_t *config)
+static bool credentials_are_valid(
+    const wifi_manager_credentials_t *credentials)
 {
-    if (config == NULL) return false;
-    const size_t ssid_len = strnlen(config->sta_ssid, sizeof(config->sta_ssid));
-    const size_t password_len = strnlen(config->sta_password,
-                                        sizeof(config->sta_password));
+    if (credentials == NULL) return false;
+    const size_t ssid_len = strnlen(credentials->sta_ssid,
+                                    sizeof(credentials->sta_ssid));
+    const size_t password_len = strnlen(credentials->sta_password,
+                                         sizeof(credentials->sta_password));
     return ssid_len > 0u && ssid_len <= WIFI_MANAGER_SSID_MAX_BYTES &&
            password_len <= WIFI_MANAGER_PASSWORD_MAX_BYTES;
 }
 
-static esp_err_t load_unlocked(wifi_manager_config_t *config)
+static esp_err_t load_unlocked(wifi_manager_credentials_t *credentials)
 {
-    *config = (wifi_manager_config_t){0};
+    *credentials = (wifi_manager_credentials_t){0};
 
     FILE *file = fopen(WIFI_CONFIG_STORE_PATH, "r");
     if (file == NULL) {
@@ -55,38 +57,40 @@ static esp_err_t load_unlocked(wifi_manager_config_t *config)
     cJSON *root = cJSON_Parse(json);
     if (root == NULL) return ESP_ERR_INVALID_RESPONSE;
 
-    wifi_manager_config_t parsed = {0};
+    wifi_manager_credentials_t parsed = {0};
     const bool valid = json_string(root, "ssid", parsed.sta_ssid,
                                    sizeof(parsed.sta_ssid), true) &&
                        json_string(root, "password", parsed.sta_password,
                                    sizeof(parsed.sta_password), false) &&
-                       config_is_valid(&parsed);
+                       credentials_are_valid(&parsed);
     cJSON_Delete(root);
     if (!valid) return ESP_ERR_INVALID_RESPONSE;
 
-    *config = parsed;
+    *credentials = parsed;
     return ESP_OK;
 }
 
-esp_err_t wifi_config_store_load(wifi_manager_config_t *config)
+esp_err_t wifi_config_store_load(wifi_manager_credentials_t *credentials)
 {
-    if (config == NULL) return ESP_ERR_INVALID_ARG;
-    *config = (wifi_manager_config_t){0};
+    if (credentials == NULL) return ESP_ERR_INVALID_ARG;
+    *credentials = (wifi_manager_credentials_t){0};
 
     esp_err_t err = app_storage_acquire();
     if (err != ESP_OK) return err;
-    err = load_unlocked(config);
+    err = load_unlocked(credentials);
     app_storage_release();
     return err;
 }
 
-static esp_err_t stage_unlocked(const wifi_manager_config_t *config)
+static esp_err_t stage_unlocked(
+    const wifi_manager_credentials_t *credentials)
 {
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) return ESP_ERR_NO_MEM;
     const bool json_fields_added =
-        cJSON_AddStringToObject(root, "ssid", config->sta_ssid) != NULL &&
-        cJSON_AddStringToObject(root, "password", config->sta_password) != NULL;
+        cJSON_AddStringToObject(root, "ssid", credentials->sta_ssid) != NULL &&
+        cJSON_AddStringToObject(root, "password",
+                                credentials->sta_password) != NULL;
     if (!json_fields_added) {
         cJSON_Delete(root);
         return ESP_ERR_NO_MEM;
@@ -128,13 +132,14 @@ static esp_err_t discard_unlocked(void)
     return ESP_FAIL;
 }
 
-esp_err_t wifi_config_store_stage(const wifi_manager_config_t *config)
+esp_err_t wifi_config_store_stage(
+    const wifi_manager_credentials_t *credentials)
 {
-    if (!config_is_valid(config)) return ESP_ERR_INVALID_ARG;
+    if (!credentials_are_valid(credentials)) return ESP_ERR_INVALID_ARG;
 
     esp_err_t err = app_storage_acquire();
     if (err != ESP_OK) return err;
-    err = stage_unlocked(config);
+    err = stage_unlocked(credentials);
     app_storage_release();
     return err;
 }
@@ -157,13 +162,14 @@ esp_err_t wifi_config_store_discard(void)
     return err;
 }
 
-esp_err_t wifi_config_store_save(const wifi_manager_config_t *config)
+esp_err_t wifi_config_store_save(
+    const wifi_manager_credentials_t *credentials)
 {
-    if (!config_is_valid(config)) return ESP_ERR_INVALID_ARG;
+    if (!credentials_are_valid(credentials)) return ESP_ERR_INVALID_ARG;
 
     esp_err_t err = app_storage_acquire();
     if (err != ESP_OK) return err;
-    err = stage_unlocked(config);
+    err = stage_unlocked(credentials);
     if (err == ESP_OK) err = commit_unlocked();
     if (err != ESP_OK) (void)discard_unlocked();
     app_storage_release();

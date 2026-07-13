@@ -24,9 +24,16 @@ void app_main(void)
     setenv("TZ", "CST-8", 1);
     tzset();
 
-    wifi_manager_config_t wifi_config = {0};
+    wifi_manager_config_t wifi_config = {
+        .ap_ssid = "ESP32S3-Template",
+        .ap_password = "template1234",
+        .ap_channel = 6u,
+        .ap_max_connections = 4u,
+        .captive_portal_dns_enabled = true,
+        .sntp_server = "ntp.aliyun.com",
+    };
     esp_err_t config_err = storage_err == ESP_OK
-        ? wifi_config_store_load(&wifi_config) : storage_err;
+        ? wifi_config_store_load(&wifi_config.sta) : storage_err;
     if (config_err == ESP_ERR_NOT_FOUND) {
         ESP_LOGI(TAG, "WiFi config not found at %s; starting provisioning AP",
                  wifi_config_store_get_path());

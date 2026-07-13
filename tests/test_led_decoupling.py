@@ -79,6 +79,7 @@ class ComponentBoundaryTests(unittest.TestCase):
             PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.h"
         ).read_text(encoding="utf-8")
 
+        self.assertIn("wifi_manager_credentials_t", header)
         self.assertIn("wifi_manager_config_t", header)
         self.assertRegex(
             header,
@@ -86,14 +87,14 @@ class ComponentBoundaryTests(unittest.TestCase):
         )
         self.assertRegex(
             header,
-            r"wifi_manager_set_credentials\s*\(\s*const wifi_manager_config_t\s*\*",
+            r"wifi_manager_set_credentials\s*\(\s*const wifi_manager_credentials_t\s*\*",
         )
 
     def test_main_mounts_storage_before_loading_and_starting_wifi(self):
         source = (PROJECT_ROOT / "main" / "main.c").read_text(encoding="utf-8")
         required = [
             "app_storage_init()",
-            "wifi_config_store_load(",
+            "wifi_config_store_load(&wifi_config.sta)",
             "wifi_manager_init(&wifi_config)",
         ]
         for token in required:
@@ -118,11 +119,11 @@ class ComponentBoundaryTests(unittest.TestCase):
         source = (PROJECT_ROOT / "main" / "web_platform.c").read_text(
             encoding="utf-8"
         )
-        snapshot_call = "wifi_manager_get_config(&previous_wifi_config)"
-        stage_call = "wifi_config_store_stage(&wifi_config)"
-        apply_call = "wifi_manager_set_credentials(&wifi_config)"
+        snapshot_call = "wifi_manager_get_credentials(&previous_wifi_credentials)"
+        stage_call = "wifi_config_store_stage(&wifi_credentials)"
+        apply_call = "wifi_manager_set_credentials(&wifi_credentials)"
         commit_call = "wifi_config_store_commit()"
-        rollback_call = "wifi_manager_set_credentials(&previous_wifi_config)"
+        rollback_call = "wifi_manager_set_credentials(&previous_wifi_credentials)"
         self.assertIn(snapshot_call, source)
         self.assertIn(stage_call, source)
         self.assertIn(apply_call, source)
@@ -134,6 +135,42 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertLess(source.index(snapshot_call), source.index(apply_call))
         self.assertLess(source.index(apply_call), source.index(commit_call))
         self.assertLess(source.index("ota_manager_is_busy()"), source.index(stage_call))
+
+    def test_wifi_startup_policy_is_application_configured(self):
+        header = (
+            PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.h"
+        ).read_text(encoding="utf-8")
+        source = (
+            PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.c"
+        ).read_text(encoding="utf-8")
+        main_source = (PROJECT_ROOT / "main" / "main.c").read_text(
+            encoding="utf-8"
+        )
+        store_header = (PROJECT_ROOT / "main" / "wifi_config_store.h").read_text(
+            encoding="utf-8"
+        )
+
+        for field in [
+            "ap_ssid",
+            "ap_password",
+            "ap_channel",
+            "ap_max_connections",
+            "captive_portal_dns_enabled",
+            "sntp_server",
+        ]:
+            self.assertIn(field, header)
+        for hard_coded_policy in [
+            "ESP32S3-Template",
+            "template1234",
+            "ntp.aliyun.com",
+            "#define WIFI_AP_SSID",
+            "#define WIFI_AP_PASS",
+        ]:
+            self.assertNotIn(hard_coded_policy, source)
+        self.assertIn("wifi_manager_config_t wifi_config = {", main_source)
+        self.assertIn('.ap_ssid = "ESP32S3-Template"', main_source)
+        self.assertIn('.sntp_server = "ntp.aliyun.com"', main_source)
+        self.assertIn("wifi_manager_credentials_t", store_header)
 
     def test_wifi_manager_preserves_valid_boundary_lengths(self):
         source = (

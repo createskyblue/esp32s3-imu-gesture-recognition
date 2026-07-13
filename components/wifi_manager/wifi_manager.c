@@ -18,8 +18,6 @@
 #include "lwip/sockets.h"
 #include "nvs_flash.h"
 
-#define WIFI_AP_SSID                        "ESP32S3-Template"
-#define WIFI_AP_PASS                        "template1234"
 #define WIFI_STA_RECONNECT_INITIAL_DELAY_MS 5000u
 #define WIFI_STA_RECONNECT_MAX_DELAY_MS     60000u
 #define DNS_PORT                            53
@@ -30,7 +28,8 @@ static const char *TAG = "WIFI_MGR";
 /* ── module state ──────────────────────────────────────────────────────── */
 static esp_netif_t     *s_sta_netif;
 static esp_netif_t     *s_ap_netif;
-static wifi_manager_config_t s_credentials;
+static wifi_manager_config_t s_startup_config;
+static wifi_manager_credentials_t s_credentials;
 static bool              s_sta_connected;
 static esp_ip4_addr_t    s_sta_ip;
 static esp_timer_handle_t s_reconnect_timer;
@@ -66,7 +65,7 @@ static void credentials_unlock(void)
     }
 }
 
-static void current_credentials_get(wifi_manager_config_t *out)
+static void current_credentials_get(wifi_manager_credentials_t *out)
 {
     if (out == NULL) return;
     credentials_lock();
@@ -75,11 +74,11 @@ static void current_credentials_get(wifi_manager_config_t *out)
 }
 
 /* ── caller-provided credentials ───────────────────────────────────────── */
-static esp_err_t credentials_copy(wifi_manager_config_t *dest,
-                                  const wifi_manager_config_t *source)
+static esp_err_t credentials_copy(wifi_manager_credentials_t *dest,
+                                  const wifi_manager_credentials_t *source)
 {
     if (dest == NULL) return ESP_ERR_INVALID_ARG;
-    *dest = (wifi_manager_config_t){0};
+    *dest = (wifi_manager_credentials_t){0};
     if (source == NULL) return ESP_OK;
 
     const size_t ssid_len = strnlen(source->sta_ssid, sizeof(source->sta_ssid));
@@ -94,8 +93,42 @@ static esp_err_t credentials_copy(wifi_manager_config_t *dest,
     return ESP_OK;
 }
 
+static esp_err_t startup_config_copy(wifi_manager_config_t *dest,
+                                     const wifi_manager_config_t *source)
+{
+    if (dest == NULL || source == NULL) return ESP_ERR_INVALID_ARG;
+    *dest = (wifi_manager_config_t){0};
+
+    esp_err_t err = credentials_copy(&dest->sta, &source->sta);
+    if (err != ESP_OK) return err;
+
+    const size_t ap_ssid_len = strnlen(source->ap_ssid,
+                                       sizeof(source->ap_ssid));
+    const size_t ap_password_len = strnlen(source->ap_password,
+                                           sizeof(source->ap_password));
+    const size_t sntp_server_len = strnlen(source->sntp_server,
+                                           sizeof(source->sntp_server));
+    if (ap_ssid_len == 0u || ap_ssid_len > WIFI_MANAGER_SSID_MAX_BYTES ||
+        ap_password_len > WIFI_MANAGER_PASSWORD_MAX_BYTES ||
+        (ap_password_len > 0u && ap_password_len < 8u) ||
+        sntp_server_len > WIFI_MANAGER_SNTP_SERVER_MAX_BYTES ||
+        source->ap_channel == 0u || source->ap_channel > 14u ||
+        source->ap_max_connections == 0u ||
+        source->ap_max_connections > 10u) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memcpy(dest->ap_ssid, source->ap_ssid, ap_ssid_len + 1u);
+    memcpy(dest->ap_password, source->ap_password, ap_password_len + 1u);
+    memcpy(dest->sntp_server, source->sntp_server, sntp_server_len + 1u);
+    dest->ap_channel = source->ap_channel;
+    dest->ap_max_connections = source->ap_max_connections;
+    dest->captive_portal_dns_enabled = source->captive_portal_dns_enabled;
+    return ESP_OK;
+}
+
 /* ── WiFi config builders ──────────────────────────────────────────────── */
-static wifi_config_t build_sta_config(const wifi_manager_config_t *c)
+static wifi_config_t build_sta_config(const wifi_manager_credentials_t *c)
 {
     wifi_config_t cfg = {0};
     if (c != NULL) {
@@ -108,20 +141,23 @@ static wifi_config_t build_sta_config(const wifi_manager_config_t *c)
     return cfg;
 }
 
-static wifi_config_t build_ap_config(void)
+static wifi_config_t build_ap_config(const wifi_manager_config_t *config)
 {
     wifi_config_t cfg = {0};
-    copy_str((char *)cfg.ap.ssid, sizeof(cfg.ap.ssid), WIFI_AP_SSID);
-    copy_str((char *)cfg.ap.password, sizeof(cfg.ap.password), WIFI_AP_PASS);
-    cfg.ap.ssid_len = strlen(WIFI_AP_SSID);
-    cfg.ap.channel = 6u;
-    cfg.ap.max_connection = 4u;
-    cfg.ap.authmode = strlen(WIFI_AP_PASS) == 0u ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_WPA2_PSK;
+    const size_t ssid_len = strlen(config->ap_ssid);
+    const size_t password_len = strlen(config->ap_password);
+    memcpy(cfg.ap.ssid, config->ap_ssid, ssid_len);
+    memcpy(cfg.ap.password, config->ap_password, password_len);
+    cfg.ap.ssid_len = ssid_len;
+    cfg.ap.channel = config->ap_channel;
+    cfg.ap.max_connection = config->ap_max_connections;
+    cfg.ap.authmode = password_len == 0u
+        ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_WPA2_PSK;
     return cfg;
 }
 
 /* ── STA connect / reconnect ───────────────────────────────────────────── */
-static bool has_credentials(const wifi_manager_config_t *credentials)
+static bool has_credentials(const wifi_manager_credentials_t *credentials)
 {
     return credentials != NULL && credentials->sta_ssid[0] != '\0';
 }
@@ -132,7 +168,7 @@ static void stop_reconnect_timer(void)
         (void)esp_timer_stop(s_reconnect_timer);
 }
 
-static esp_err_t connect_sta_now(const wifi_manager_config_t *credentials)
+static esp_err_t connect_sta_now(const wifi_manager_credentials_t *credentials)
 {
     stop_reconnect_timer();
     if (!has_credentials(credentials)) {
@@ -145,7 +181,7 @@ static esp_err_t connect_sta_now(const wifi_manager_config_t *credentials)
 
 static esp_err_t connect_current_sta_now(void)
 {
-    wifi_manager_config_t credentials;
+    wifi_manager_credentials_t credentials;
     current_credentials_get(&credentials);
     return connect_sta_now(&credentials);
 }
@@ -153,7 +189,7 @@ static esp_err_t connect_current_sta_now(void)
 static void reconnect_timer_cb(void *arg)
 {
     (void)arg;
-    wifi_manager_config_t credentials;
+    wifi_manager_credentials_t credentials;
     current_credentials_get(&credentials);
     if (s_sta_connected || !has_credentials(&credentials)) return;
     esp_err_t err = esp_wifi_connect();
@@ -163,7 +199,7 @@ static void reconnect_timer_cb(void *arg)
 
 static void schedule_reconnect(void)
 {
-    wifi_manager_config_t credentials;
+    wifi_manager_credentials_t credentials;
     current_credentials_get(&credentials);
     if (s_sta_connected || !has_credentials(&credentials) ||
         s_reconnect_timer == NULL) return;
@@ -183,7 +219,7 @@ static void schedule_reconnect(void)
     }
 }
 
-static esp_err_t apply_sta_config(const wifi_manager_config_t *credentials)
+static esp_err_t apply_sta_config(const wifi_manager_credentials_t *credentials)
 {
     wifi_config_t cfg = build_sta_config(credentials);
     esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &cfg);
@@ -200,7 +236,7 @@ static esp_err_t apply_sta_config(const wifi_manager_config_t *credentials)
 
 static esp_err_t enter_provisioning_mode_locked(void)
 {
-    const wifi_manager_config_t empty_credentials = {0};
+    const wifi_manager_credentials_t empty_credentials = {0};
     s_credentials = empty_credentials;
     stop_reconnect_timer();
     s_sta_connected = false;
@@ -230,10 +266,11 @@ static void sntp_event_handler(void *arg, esp_event_base_t event_base,
 static void sntp_start(void)
 {
     static bool initialized = false;
-    if (initialized) return;
+    if (initialized || s_startup_config.sntp_server[0] == '\0') return;
     initialized = true;
 
-    esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("ntp.aliyun.com");
+    esp_sntp_config_t config =
+        ESP_NETIF_SNTP_DEFAULT_CONFIG(s_startup_config.sntp_server);
     esp_err_t err = esp_netif_sntp_init(&config);
     if (err != ESP_OK)
         ESP_LOGW(TAG, "SNTP init failed: %s", esp_err_to_name(err));
@@ -332,8 +369,8 @@ static esp_err_t dns_start(void)
 /* ── public: init ──────────────────────────────────────────────────────── */
 esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
 {
-    wifi_manager_config_t initial_credentials;
-    esp_err_t err = credentials_copy(&initial_credentials, config);
+    wifi_manager_config_t initial_config;
+    esp_err_t err = startup_config_copy(&initial_config, config);
     if (err != ESP_OK) return err;
 
     if (s_credentials_mutex == NULL) {
@@ -345,7 +382,8 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
         credentials_unlock();
         return ESP_ERR_INVALID_STATE;
     }
-    s_credentials = (wifi_manager_config_t){0};
+    s_credentials = (wifi_manager_credentials_t){0};
+    s_startup_config = initial_config;
     credentials_unlock();
 
     ESP_RETURN_ON_ERROR(nvs_flash_init(), TAG, "NVS init failed");
@@ -356,15 +394,17 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
     s_ap_netif  = esp_netif_create_default_wifi_ap();
     if (s_sta_netif == NULL || s_ap_netif == NULL) return ESP_ERR_NO_MEM;
 
-    /* DHCP: advertise ESP32 as DNS server for captive portal */
-    esp_netif_dns_info_t dns_info = {0};
-    dns_info.ip.u_addr.ip4.addr = esp_ip4addr_aton("192.168.4.1");
-    dns_info.ip.type = ESP_IPADDR_TYPE_V4;
-    ESP_RETURN_ON_ERROR(
-        esp_netif_dhcps_option(s_ap_netif, ESP_NETIF_OP_SET,
-                               ESP_NETIF_DOMAIN_NAME_SERVER,
-                               &dns_info, sizeof(dns_info)),
-        TAG, "SoftAP DHCP DNS option failed");
+    if (initial_config.captive_portal_dns_enabled) {
+        /* Advertise the SoftAP as DNS server for captive-portal clients. */
+        esp_netif_dns_info_t dns_info = {0};
+        dns_info.ip.u_addr.ip4.addr = esp_ip4addr_aton("192.168.4.1");
+        dns_info.ip.type = ESP_IPADDR_TYPE_V4;
+        ESP_RETURN_ON_ERROR(
+            esp_netif_dhcps_option(s_ap_netif, ESP_NETIF_OP_SET,
+                                   ESP_NETIF_DOMAIN_NAME_SERVER,
+                                   &dns_info, sizeof(dns_info)),
+            TAG, "SoftAP DHCP DNS option failed");
+    }
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "WiFi driver init failed");
@@ -378,20 +418,23 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
     ESP_RETURN_ON_ERROR(esp_timer_create(&timer_args, &s_reconnect_timer), TAG,
                         "reconnect timer creation failed");
 
-    esp_event_handler_instance_t inst_any, inst_got_ip, inst_sntp;
+    esp_event_handler_instance_t inst_any, inst_got_ip;
     ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(
         WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &inst_any),
         TAG, "WiFi event handler registration failed");
     ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(
         IP_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &inst_got_ip),
         TAG, "IP event handler registration failed");
-    ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(
-        NETIF_SNTP_EVENT, NETIF_SNTP_TIME_SYNC, &sntp_event_handler, NULL,
-        &inst_sntp), TAG, "SNTP event handler registration failed");
+    if (initial_config.sntp_server[0] != '\0') {
+        esp_event_handler_instance_t inst_sntp;
+        ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(
+            NETIF_SNTP_EVENT, NETIF_SNTP_TIME_SYNC, &sntp_event_handler, NULL,
+            &inst_sntp), TAG, "SNTP event handler registration failed");
+    }
 
-    const wifi_manager_config_t empty_credentials = {0};
+    const wifi_manager_credentials_t empty_credentials = {0};
     wifi_config_t sta_cfg = build_sta_config(&empty_credentials);
-    wifi_config_t ap_cfg  = build_ap_config();
+    wifi_config_t ap_cfg  = build_ap_config(&initial_config);
 
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG,
                         "APSTA mode selection failed");
@@ -405,10 +448,12 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
     s_started = true;
     credentials_unlock();
 
-    ESP_RETURN_ON_ERROR(dns_start(), TAG, "DNS task creation failed");
+    if (initial_config.captive_portal_dns_enabled) {
+        ESP_RETURN_ON_ERROR(dns_start(), TAG, "DNS task creation failed");
+    }
 
-    if (has_credentials(&initial_credentials)) {
-        err = wifi_manager_set_credentials(&initial_credentials);
+    if (has_credentials(&initial_config.sta)) {
+        err = wifi_manager_set_credentials(&initial_config.sta);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "initial STA config rejected; SoftAP remains active: %s",
                      esp_err_to_name(err));
@@ -417,7 +462,7 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
     }
 
     ESP_LOGI(TAG, "WiFi APSTA init done, AP=%s STA=%s",
-             WIFI_AP_SSID, initial_credentials.sta_ssid);
+             initial_config.ap_ssid, initial_config.sta.sta_ssid);
     return ESP_OK;
 }
 
@@ -427,7 +472,7 @@ void wifi_manager_get_snapshot(wifi_snapshot_t *out)
     if (out == NULL) return;
     memset(out, 0, sizeof(*out));
 
-    wifi_manager_config_t credentials;
+    wifi_manager_credentials_t credentials;
     current_credentials_get(&credentials);
 
     out->sta_connected = s_sta_connected;
@@ -452,7 +497,7 @@ void wifi_manager_get_snapshot(wifi_snapshot_t *out)
     out->has_password = credentials.sta_password[0] != '\0';
 }
 
-void wifi_manager_get_config(wifi_manager_config_t *out)
+void wifi_manager_get_credentials(wifi_manager_credentials_t *out)
 {
     current_credentials_get(out);
 }
@@ -466,11 +511,12 @@ bool wifi_manager_is_started(void)
 }
 
 /* ── public: update credentials ────────────────────────────────────────── */
-esp_err_t wifi_manager_set_credentials(const wifi_manager_config_t *config)
+esp_err_t wifi_manager_set_credentials(
+    const wifi_manager_credentials_t *config)
 {
     if (config == NULL) return ESP_ERR_INVALID_ARG;
 
-    wifi_manager_config_t credentials;
+    wifi_manager_credentials_t credentials;
     esp_err_t err = credentials_copy(&credentials, config);
     if (err != ESP_OK) return err;
 
@@ -481,7 +527,7 @@ esp_err_t wifi_manager_set_credentials(const wifi_manager_config_t *config)
         return ESP_ERR_INVALID_STATE;
     }
 
-    const wifi_manager_config_t previous = s_credentials;
+    const wifi_manager_credentials_t previous = s_credentials;
     s_credentials = credentials;
     err = apply_sta_config(&credentials);
     if (err == ESP_OK) {
@@ -518,4 +564,4 @@ esp_err_t wifi_manager_enter_provisioning_mode(void)
 }
 
 /* ── public: constants ─────────────────────────────────────────────────── */
-const char *wifi_manager_get_ap_ssid(void)     { return WIFI_AP_SSID; }
+const char *wifi_manager_get_ap_ssid(void) { return s_startup_config.ap_ssid; }

@@ -300,9 +300,9 @@ static esp_err_t wifi_config_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    wifi_manager_config_t wifi_config = {0};
-    memcpy(wifi_config.sta_ssid, ssid, strlen(ssid) + 1u);
-    memcpy(wifi_config.sta_password, pass, strlen(pass) + 1u);
+    wifi_manager_credentials_t wifi_credentials = {0};
+    memcpy(wifi_credentials.sta_ssid, ssid, strlen(ssid) + 1u);
+    memcpy(wifi_credentials.sta_password, pass, strlen(pass) + 1u);
     cJSON_Delete(root);
 
     if (app_storage_try_acquire() != ESP_OK) {
@@ -317,7 +317,7 @@ static esp_err_t wifi_config_post_handler(httpd_req_t *req)
                                   "cannot update WiFi configuration during OTA");
     }
 
-    esp_err_t err = wifi_config_store_stage(&wifi_config);
+    esp_err_t err = wifi_config_store_stage(&wifi_credentials);
     if (err != ESP_OK) {
         (void)wifi_config_store_discard();
         app_storage_release();
@@ -327,10 +327,10 @@ static esp_err_t wifi_config_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    wifi_manager_config_t previous_wifi_config;
-    wifi_manager_get_config(&previous_wifi_config);
+    wifi_manager_credentials_t previous_wifi_credentials;
+    wifi_manager_get_credentials(&previous_wifi_credentials);
 
-    err = wifi_manager_set_credentials(&wifi_config);
+    err = wifi_manager_set_credentials(&wifi_credentials);
     if (err != ESP_OK) {
         (void)wifi_config_store_discard();
         app_storage_release();
@@ -345,7 +345,7 @@ static esp_err_t wifi_config_post_handler(httpd_req_t *req)
         ESP_LOGW(TAG, "commit WiFi config failed: %s", esp_err_to_name(err));
         (void)wifi_config_store_discard();
         const esp_err_t rollback_err =
-            wifi_manager_set_credentials(&previous_wifi_config);
+            wifi_manager_set_credentials(&previous_wifi_credentials);
         if (rollback_err != ESP_OK) {
             ESP_LOGE(TAG, "rollback WiFi config failed: %s",
                      esp_err_to_name(rollback_err));
@@ -372,7 +372,7 @@ static esp_err_t wifi_config_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
     cJSON_AddBoolToObject(resp, "ok", true);
-    cJSON_AddStringToObject(resp, "ssid", wifi_config.sta_ssid);
+    cJSON_AddStringToObject(resp, "ssid", wifi_credentials.sta_ssid);
     cJSON_AddStringToObject(resp, "path", wifi_config_store_get_path());
     cJSON_AddStringToObject(resp, "message", "saved; reconnecting STA");
     return send_json_object(req, resp);

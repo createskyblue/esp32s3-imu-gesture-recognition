@@ -6,13 +6,15 @@
 #include <stdbool.h>
 
 /** Load credentials from the application LittleFS JSON file. */
-esp_err_t wifi_config_store_load(wifi_manager_config_t *config);
+esp_err_t wifi_config_store_load(wifi_manager_credentials_t *credentials);
 
 /** Persist credentials to the application LittleFS JSON file. */
-esp_err_t wifi_config_store_save(const wifi_manager_config_t *config);
+esp_err_t wifi_config_store_save(
+    const wifi_manager_credentials_t *credentials);
 
 /** Write and fsync credentials to the protected temporary path. */
-esp_err_t wifi_config_store_stage(const wifi_manager_config_t *config);
+esp_err_t wifi_config_store_stage(
+    const wifi_manager_credentials_t *credentials);
 
 /** Atomically replace the live file with a previously staged file. */
 esp_err_t wifi_config_store_commit(void);
