@@ -172,6 +172,18 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertIn('.sntp_server = "ntp.aliyun.com"', main_source)
         self.assertIn("wifi_manager_credentials_t", store_header)
 
+    def test_dns_response_buffer_includes_appended_answer(self):
+        source = (
+            PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.c"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("DNS_A_ANSWER_TEMPLATE", source)
+        self.assertRegex(
+            source,
+            r"uint8_t\s+response\s*\[\s*DNS_MAX_QUERY_LEN\s*\+\s*"
+            r"sizeof\(DNS_A_ANSWER_TEMPLATE\)\s*\]",
+        )
+
     def test_wifi_manager_preserves_valid_boundary_lengths(self):
         source = (
             PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.c"

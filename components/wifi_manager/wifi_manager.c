@@ -24,6 +24,11 @@
 #define DNS_MAX_QUERY_LEN                   512
 
 static const char *TAG = "WIFI_MGR";
+static const uint8_t DNS_A_ANSWER_TEMPLATE[] = {
+    0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01,
+    0x00, 0x00, 0x00, 60, 0x00, 0x04,
+    0x00, 0x00, 0x00, 0x00,
+};
 
 /* ── module state ──────────────────────────────────────────────────────── */
 static esp_netif_t     *s_sta_netif;
@@ -332,30 +337,29 @@ static void dns_server_task(void *arg)
         int len = recvfrom(sock, buf, sizeof(buf), 0, (struct sockaddr *)&from, &fromlen);
         if (len < 12) continue;
 
-        uint8_t response[DNS_MAX_QUERY_LEN];
+        uint8_t response[
+            DNS_MAX_QUERY_LEN + sizeof(DNS_A_ANSWER_TEMPLATE)];
         memcpy(response, buf, (size_t)len);
         response[2] |= 0x80; response[3] |= 0x80;
         response[6] = 0x00; response[7] = 0x01;
 
         size_t answer_off = (size_t)len;
-        uint8_t answer[] = {
-            0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01,
-            0x00, 0x00, 0x00, 60, 0x00, 0x04,
-            0x00, 0x00, 0x00, 0x00
-        };
-        memcpy(response + answer_off, answer, sizeof(answer));
+        memcpy(response + answer_off, DNS_A_ANSWER_TEMPLATE,
+               sizeof(DNS_A_ANSWER_TEMPLATE));
 
         esp_netif_ip_info_t ip_info;
         if (s_ap_netif && esp_netif_get_ip_info(s_ap_netif, &ip_info) == ESP_OK) {
             uint32_t ip = ip_info.ip.addr;
-            memcpy(response + answer_off + sizeof(answer) - 4, &ip, 4);
+            memcpy(response + answer_off + sizeof(DNS_A_ANSWER_TEMPLATE) - 4,
+                   &ip, 4);
         } else {
-            response[answer_off + sizeof(answer) - 4] = 192;
-            response[answer_off + sizeof(answer) - 3] = 168;
-            response[answer_off + sizeof(answer) - 2] = 4;
-            response[answer_off + sizeof(answer) - 1] = 1;
+            response[answer_off + sizeof(DNS_A_ANSWER_TEMPLATE) - 4] = 192;
+            response[answer_off + sizeof(DNS_A_ANSWER_TEMPLATE) - 3] = 168;
+            response[answer_off + sizeof(DNS_A_ANSWER_TEMPLATE) - 2] = 4;
+            response[answer_off + sizeof(DNS_A_ANSWER_TEMPLATE) - 1] = 1;
         }
-        sendto(sock, response, answer_off + sizeof(answer), 0,
+        sendto(sock, response,
+               answer_off + sizeof(DNS_A_ANSWER_TEMPLATE), 0,
                (struct sockaddr *)&from, fromlen);
     }
 }
