@@ -15,7 +15,7 @@
 | **OTA 升级** | 支持固件 + 文件系统远程升级，也支持网页直接上传刷写 |
 | **SD 日志（可选）** | 独立的 ESP_LOG 双写组件；默认固件不初始化、不接管全局日志输出 |
 | **SNTP 授时** | STA 连接成功后自动同步北京时间（ntp.aliyun.com） |
-| **LED 驱动（可选）** | 独立四路 LED 队列驱动；默认固件不初始化、不占用 GPIO |
+| **LED 心跳** | `main` 显式启用独立 LED 组件，绿灯以 2 Hz、50% 占空比持续闪烁 |
 | **调试接口** | `/debug.json` 查看堆内存、PSRAM、任务列表、运行时间 |
 
 ## 界面预览
@@ -26,9 +26,9 @@
 
 ## 硬件接线
 
-### LED（可选，低电平点亮）
+### LED（低电平点亮）
 
-以下引脚仅在应用显式启用 `led_task` 后才会被配置；默认固件不会占用它们。
+默认 `app_main()` 会显式初始化 `led_task`，因此以下四个 GPIO 都会由 LED 组件配置；绿灯作为心跳灯，以 500 ms 周期、250 ms 点亮时间持续闪烁。
 
 | LED | GPIO |
 |-----|------|
@@ -94,7 +94,7 @@ idf.py -p COMx flash monitor
 ├── partitions.csv              # OTA 分区表 (app×2 + LittleFS)
 ├── sdkconfig.defaults          # ESP-IDF 默认配置
 ├── main/                       # 应用层（基础设施编排 + 业务端点）
-│   ├── main.c                  # 入口：LittleFS → WiFi配置 → WiFi → Web
+│   ├── main.c                  # 入口：LittleFS → LED心跳 → WiFi配置 → WiFi → Web
 │   ├── app_storage.c/.h        # 应用存储所有者：挂载 LittleFS
 │   ├── wifi_config_store.c/.h  # WiFi 凭据 JSON 读写（应用层）
 │   ├── web_platform.c/.h       # HTTP 服务器 + 页面路由 + Web 组件编排
@@ -107,7 +107,7 @@ idf.py -p COMx flash monitor
     ├── wifi_manager/           # WiFi APSTA + 可选 DNS/SNTP（启动策略由调用方传入）
     ├── ota_manager/            # OTA 状态机 + 下载刷写 + 上传逻辑
     ├── file_manager/           # Web 文件管理器 API
-    ├── led_task/               # 可选的独立四路 LED 驱动（默认未启用）
+    ├── led_task/               # 独立四路 LED 驱动（main 默认启用绿灯心跳）
     ├── sd_card/                # SD 卡 SPI 驱动
     ├── sd_logger/              # 可选日志双写组件（默认未启用）
     └── json/                   # cJSON 辅助组件
@@ -171,12 +171,9 @@ if (sd_err != ESP_OK) {
 
 默认固件不会初始化 `sd_logger`，WiFi、Web 等平台组件也不依赖它。需要日志双写时，由用户在自己的启动编排中显式依赖 `sd_logger`，并在 `sd_card_init()` 成功后调用 `sd_logger_init()`；如需在 SNTP 同步后切换时间戳文件名，可由用户自己的事件处理器调用 `sd_logger_notify_time_synced()`。
 
-### 可选启用 LED
+### LED 组件边界
 
-`wifi_manager`、`web_platform` 和默认启动流程均不依赖 LED。需要使用板载 LED 时，由应用层显式选择组件：
-
-1. 在 `main/CMakeLists.txt` 的 `REQUIRES` 中添加 `led_task`。
-2. 在业务代码中初始化组件并发送所需命令：
+`wifi_manager` 和 `web_platform` 均不依赖 LED。默认应用只在 `main/main.c` 中显式选择 `led_task` 并启动绿灯心跳：
 
 ```c
 #include "led_task.h"
@@ -186,12 +183,12 @@ ESP_ERROR_CHECK(led_task_init());
 const led_cmd_t heartbeat = {
     .led = LED_GREEN,
     .type = LED_CMD_BLINK,
-    .period_ms = 1000,
-    .on_ms = 100,
+    .period_ms = 500u,
+    .on_ms = 250u,
 };
 led_send_cmd(&heartbeat);
 ```
 
-如果需要用 LED 表示网络状态，可在应用层注册 ESP-IDF 的 `WIFI_EVENT` / `IP_EVENT` 处理器后发送 LED 命令，无需修改或反向依赖 `wifi_manager`。
+如需关闭默认心跳，可从 `main` 移除初始化和 `led_task` 构建依赖；如需用 LED 表示网络状态，可在应用层注册 ESP-IDF 的 `WIFI_EVENT` / `IP_EVENT` 处理器后发送 LED 命令，无需修改或反向依赖 `wifi_manager`。
 
 模板已为你处理好了 WiFi、存储、Web 服务等基础设施，你只需关注自己的业务逻辑。

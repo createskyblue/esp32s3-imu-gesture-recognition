@@ -6,6 +6,7 @@
 
 #include "app_storage.h"
 #include "hello_web.h"
+#include "led_task.h"
 #include "web_platform.h"
 #include "wifi_config_store.h"
 #include "wifi_manager.h"
@@ -19,6 +20,15 @@ void app_main(void)
         ESP_LOGE(TAG, "LittleFS unavailable: %s; starting AP + OTA recovery mode",
                  esp_err_to_name(storage_err));
     }
+
+    ESP_ERROR_CHECK(led_task_init());
+    const led_cmd_t heartbeat = {
+        .led = LED_GREEN,
+        .type = LED_CMD_BLINK,
+        .period_ms = 500u,
+        .on_ms = 250u,
+    };
+    led_send_cmd(&heartbeat);
 
     /* Set timezone to UTC+8 (China Standard Time) */
     setenv("TZ", "CST-8", 1);

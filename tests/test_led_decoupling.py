@@ -65,6 +65,24 @@ class LedDecouplingTests(unittest.TestCase):
 
         self.assertNotRegex(source, r"(?:cmd->led|i)\s*==\s*LED_GREEN")
 
+    def test_main_starts_green_led_heartbeat_at_two_hz(self):
+        source = (PROJECT_ROOT / "main" / "main.c").read_text(encoding="utf-8")
+        cmake = (PROJECT_ROOT / "main" / "CMakeLists.txt").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertRegex(source, r'(?m)^#include\s+"led_task\.h"$')
+        self.assertRegex(cmake, r"\bled_task\b")
+        self.assertIn("ESP_ERROR_CHECK(led_task_init())", source)
+        self.assertIn(".led = LED_GREEN", source)
+        self.assertIn(".type = LED_CMD_BLINK", source)
+        self.assertIn(".period_ms = 500u", source)
+        self.assertIn(".on_ms = 250u", source)
+        self.assertIn("led_send_cmd(&heartbeat)", source)
+        self.assertLess(
+            source.index("app_storage_init()"), source.index("led_task_init()")
+        )
+
 
 class ComponentBoundaryTests(unittest.TestCase):
     def test_wifi_manager_has_no_storage_or_sd_logger_dependency(self):
