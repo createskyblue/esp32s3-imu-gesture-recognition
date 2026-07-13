@@ -1,0 +1,333 @@
+import json
+import re
+import unittest
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+LED_COMPONENT = PROJECT_ROOT / "components" / "led_task"
+
+LED_REFERENCE = re.compile(
+    r"\bled_task(?:_init)?\b|"
+    r"\bled_(?:send_cmd|fatal_error|cmd_t)\b|"
+    r"\bLED_(?:RED|YELLOW|GREEN|BLUE|COUNT|CMD_[A-Z_]+)\b"
+)
+BOARD_LED_GPIO = re.compile(r"\bGPIO_NUM_(?:5|6|7|15)\b")
+WIFI_PLATFORM_COUPLING = re.compile(
+    r"sd_logger|cJSON|wifi_config\.h|WIFI_CONFIG_PATH|/littlefs|"
+    r"\bfopen\s*\(|\bfputs\s*\("
+)
+
+
+def production_sources(root: Path):
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        if path.suffix in {".c", ".h"} or path.name == "CMakeLists.txt":
+            yield path
+
+
+def matches_in(paths, pattern):
+    matches = []
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if pattern.search(line):
+                matches.append(f"{path.relative_to(PROJECT_ROOT)}:{line_number}: {line.strip()}")
+    return matches
+
+
+class LedDecouplingTests(unittest.TestCase):
+    def test_default_config_does_not_require_application_idle_hook(self):
+        defaults = (PROJECT_ROOT / "sdkconfig.defaults").read_text(encoding="utf-8")
+
+        self.assertNotRegex(defaults, r"(?m)^CONFIG_FREERTOS_USE_IDLE_HOOK=y$")
+
+    def test_platform_does_not_reference_or_claim_leds(self):
+        platform_sources = [
+            path
+            for path in production_sources(PROJECT_ROOT / "components")
+            if LED_COMPONENT not in path.parents
+        ]
+        platform_sources.extend(
+            [
+                PROJECT_ROOT / "main" / "web_platform.c",
+                PROJECT_ROOT / "main" / "web_platform.h",
+            ]
+        )
+        violations = matches_in(platform_sources, LED_REFERENCE)
+        violations.extend(matches_in(platform_sources, BOARD_LED_GPIO))
+
+        self.assertEqual([], violations)
+
+    def test_optional_led_component_does_not_reserve_green_led(self):
+        source = (LED_COMPONENT / "led_task.c").read_text(encoding="utf-8")
+
+        self.assertNotRegex(source, r"(?:cmd->led|i)\s*==\s*LED_GREEN")
+
+
+class ComponentBoundaryTests(unittest.TestCase):
+    def test_wifi_manager_has_no_storage_or_sd_logger_dependency(self):
+        wifi_sources = list(
+            production_sources(PROJECT_ROOT / "components" / "wifi_manager")
+        )
+
+        self.assertEqual([], matches_in(wifi_sources, WIFI_PLATFORM_COUPLING))
+
+    def test_wifi_manager_accepts_caller_provided_credentials(self):
+        header = (
+            PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.h"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("wifi_manager_config_t", header)
+        self.assertRegex(
+            header,
+            r"wifi_manager_init\s*\(\s*const wifi_manager_config_t\s*\*",
+        )
+        self.assertRegex(
+            header,
+            r"wifi_manager_set_credentials\s*\(\s*const wifi_manager_config_t\s*\*",
+        )
+
+    def test_main_mounts_storage_before_loading_and_starting_wifi(self):
+        source = (PROJECT_ROOT / "main" / "main.c").read_text(encoding="utf-8")
+        required = [
+            "app_storage_init()",
+            "wifi_config_store_load(",
+            "wifi_manager_init(&wifi_config)",
+        ]
+        for token in required:
+            self.assertIn(token, source)
+
+        self.assertLess(source.index(required[0]), source.index("setenv("))
+        self.assertLess(source.index(required[0]), source.index(required[1]))
+        self.assertLess(source.index(required[1]), source.index(required[2]))
+
+    def test_application_storage_is_the_littlefs_mount_owner(self):
+        storage_source = PROJECT_ROOT / "main" / "app_storage.c"
+        self.assertTrue(storage_source.exists())
+        source = storage_source.read_text(encoding="utf-8")
+        self.assertIn("esp_vfs_littlefs_register", source)
+
+        web_source = (PROJECT_ROOT / "main" / "web_platform.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("esp_vfs_littlefs_register", web_source)
+
+    def test_web_applies_then_atomically_persists_with_rollback(self):
+        source = (PROJECT_ROOT / "main" / "web_platform.c").read_text(
+            encoding="utf-8"
+        )
+        snapshot_call = "wifi_manager_get_config(&previous_wifi_config)"
+        stage_call = "wifi_config_store_stage(&wifi_config)"
+        apply_call = "wifi_manager_set_credentials(&wifi_config)"
+        commit_call = "wifi_config_store_commit()"
+        rollback_call = "wifi_manager_set_credentials(&previous_wifi_config)"
+        self.assertIn(snapshot_call, source)
+        self.assertIn(stage_call, source)
+        self.assertIn(apply_call, source)
+        self.assertIn(commit_call, source)
+        self.assertIn(rollback_call, source)
+        self.assertIn("wifi_config_store_discard()", source)
+        self.assertIn("wifi_manager_enter_provisioning_mode()", source)
+        self.assertLess(source.index(stage_call), source.index(snapshot_call))
+        self.assertLess(source.index(snapshot_call), source.index(apply_call))
+        self.assertLess(source.index(apply_call), source.index(commit_call))
+        self.assertLess(source.index("ota_manager_is_busy()"), source.index(stage_call))
+
+    def test_wifi_manager_preserves_valid_boundary_lengths(self):
+        source = (
+            PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.c"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("memcpy(cfg.sta.ssid", source)
+        self.assertIn("memcpy(cfg.sta.password", source)
+        self.assertNotIn("copy_str((char *)cfg.sta", source)
+
+    def test_wifi_store_replaces_config_atomically(self):
+        source = (PROJECT_ROOT / "main" / "wifi_config_store.c").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("WIFI_CONFIG_TEMP_PATH", source)
+        self.assertIn("fsync(", source)
+        self.assertIn("rename(", source)
+
+    def test_wifi_store_rejects_incomplete_json_allocation(self):
+        source = (PROJECT_ROOT / "main" / "wifi_config_store.c").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertRegex(
+            source,
+            r'cJSON_AddStringToObject\(root,\s*"ssid"[^;]+!=\s*NULL',
+        )
+        self.assertRegex(
+            source,
+            r'cJSON_AddStringToObject\(root,\s*"password"[^;]+!=\s*NULL',
+        )
+
+    def test_wifi_store_can_reload_maximally_escaped_valid_credentials(self):
+        source = (PROJECT_ROOT / "main" / "wifi_config_store.c").read_text(
+            encoding="utf-8"
+        )
+        match = re.search(
+            r"#define\s+WIFI_CONFIG_JSON_BUFFER_BYTES\s+(\d+)u", source
+        )
+        self.assertIsNotNone(match)
+
+        encoded = json.dumps(
+            {
+                "ssid": "\x01" * 32,
+                "password": "\x01" * 64,
+            },
+            separators=(",", ":"),
+        )
+        self.assertGreaterEqual(int(match.group(1)), len(encoded.encode()) + 1)
+
+    def test_wifi_manager_serializes_credentials_and_propagates_init_errors(self):
+        source = (
+            PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.c"
+        ).read_text(encoding="utf-8")
+        header = (
+            PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.h"
+        ).read_text(encoding="utf-8")
+        main_source = (PROJECT_ROOT / "main" / "main.c").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("s_credentials_mutex", source)
+        self.assertIn("xSemaphoreCreateMutex", source)
+        self.assertNotIn("ESP_ERROR_CHECK", source)
+        self.assertIn("wifi_manager_is_started", header)
+        self.assertIn("wifi_manager_is_started()", main_source)
+
+    def test_application_storage_coordinates_filesystem_ota_and_http_access(self):
+        storage_header = (PROJECT_ROOT / "main" / "app_storage.h").read_text(
+            encoding="utf-8"
+        )
+        store_source = (PROJECT_ROOT / "main" / "wifi_config_store.c").read_text(
+            encoding="utf-8"
+        )
+        ota_header = (
+            PROJECT_ROOT / "components" / "ota_manager" / "ota_manager.h"
+        ).read_text(encoding="utf-8")
+        ota_source = (
+            PROJECT_ROOT / "components" / "ota_manager" / "ota_manager.c"
+        ).read_text(encoding="utf-8")
+        ota_cmake = (
+            PROJECT_ROOT / "components" / "ota_manager" / "CMakeLists.txt"
+        ).read_text(encoding="utf-8")
+        file_header = (
+            PROJECT_ROOT / "components" / "file_manager" / "file_manager.h"
+        ).read_text(encoding="utf-8")
+        web_source = (PROJECT_ROOT / "main" / "web_platform.c").read_text(
+            encoding="utf-8"
+        )
+
+        for token in [
+            "app_storage_acquire",
+            "app_storage_try_acquire",
+            "app_storage_release",
+            "app_storage_begin_update",
+            "app_storage_end_update",
+        ]:
+            self.assertIn(token, storage_header)
+        self.assertIn("app_storage_acquire()", store_source)
+        self.assertIn("app_storage_release()", store_source)
+
+        self.assertIn("ota_manager_config_t", ota_header)
+        self.assertIn("filesystem_update_begin", ota_header)
+        self.assertNotIn("esp_littlefs", ota_source)
+        self.assertNotRegex(ota_source, r'partition_label\s*=\s*"storage"')
+        self.assertNotRegex(ota_source, r'esp_partition_find_first\([^;]+"storage"')
+        self.assertNotIn("littlefs", ota_cmake.lower())
+
+        self.assertIn("file_manager_set_access_callbacks", file_header)
+        self.assertIn("file_manager_set_access_callbacks(", web_source)
+        self.assertIn("app_storage_try_acquire()", web_source)
+
+    def test_corrupt_filesystem_still_allows_ota_recovery(self):
+        storage_source = (PROJECT_ROOT / "main" / "app_storage.c").read_text(
+            encoding="utf-8"
+        )
+        main_source = (PROJECT_ROOT / "main" / "main.c").read_text(
+            encoding="utf-8"
+        )
+        web_source = (PROJECT_ROOT / "main" / "web_platform.c").read_text(
+            encoding="utf-8"
+        )
+
+        begin_update = storage_source[
+            storage_source.index("esp_err_t app_storage_begin_update") :
+            storage_source.index("esp_err_t app_storage_end_update")
+        ]
+        self.assertNotIn("!s_mounted || s_update_active", begin_update)
+        self.assertIn("if (s_mounted)", begin_update)
+        self.assertNotIn("ESP_ERROR_CHECK(app_storage_init())", main_source)
+        self.assertIn("FILESYSTEM_RECOVERY_HTML", web_source)
+        self.assertIn("/ota/upload/filesystem", web_source)
+
+    def test_web_reports_file_existence_instead_of_false_loaded_state(self):
+        source = (PROJECT_ROOT / "main" / "web_platform.c").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn('"config_loaded"', source)
+        self.assertNotIn('"loaded_from_file"', source)
+        self.assertIn('"config_exists"', source)
+
+    def test_wifi_config_is_blocked_from_public_file_access(self):
+        store_header = (
+            PROJECT_ROOT / "main" / "wifi_config_store.h"
+        ).read_text(encoding="utf-8")
+        file_header = (
+            PROJECT_ROOT / "components" / "file_manager" / "file_manager.h"
+        ).read_text(encoding="utf-8")
+        file_source = (
+            PROJECT_ROOT / "components" / "file_manager" / "file_manager.c"
+        ).read_text(encoding="utf-8")
+        web_source = (PROJECT_ROOT / "main" / "web_platform.c").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("wifi_config_store_is_path", store_header)
+        self.assertIn("file_manager_set_read_guard", file_header)
+        self.assertIn("file_manager_set_read_guard(protect_wifi_config)", web_source)
+        self.assertIn(
+            "file_manager_set_mutation_guard(protect_wifi_config)", web_source
+        )
+        self.assertIn("wifi_config_store_is_path(path)", web_source)
+
+        mkdir_action = file_source[
+            file_source.index("static esp_err_t file_manager_mkdir_action") :
+            file_source.index("static cJSON *receive_upload_metadata")
+        ]
+        self.assertIn("mutation_denied(fs_type, resolved)", mkdir_action)
+
+    def test_default_platform_does_not_start_sd_logger(self):
+        platform_entrypoints = [
+            PROJECT_ROOT / "main" / "main.c",
+            PROJECT_ROOT / "main" / "web_platform.c",
+            PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.c",
+        ]
+
+        self.assertEqual([], matches_in(platform_entrypoints, re.compile(r"sd_logger")))
+
+    def test_wifi_provisioning_example_is_json_not_compile_time_macros(self):
+        header_example = PROJECT_ROOT / "main" / "wifi_config.example.h"
+        json_example = PROJECT_ROOT / "main" / "wifi_config.example.json"
+
+        self.assertFalse(header_example.exists())
+        self.assertTrue(json_example.exists())
+        example = json.loads(json_example.read_text(encoding="utf-8"))
+        self.assertEqual({"ssid", "password"}, set(example))
+
+        docs = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+        ignore = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertNotIn("wifi_config.example.h", docs)
+        self.assertNotIn("main/wifi_config.h", ignore)
+
+
+if __name__ == "__main__":
+    unittest.main()
