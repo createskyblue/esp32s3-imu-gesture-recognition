@@ -41,6 +41,15 @@
     .sys-item{border:1px solid #d7e0ea;border-radius:8px;padding:12px;text-align:left;background:#fbfdff}
     .sys-item .label{font-size:12px;color:#5c6878;margin-bottom:2px}
     .sys-item .value{font-size:16px;line-height:1.45;font-weight:800;word-break:break-word}
+    .usage-total{margin-top:4px;color:#475569;font-size:13px;font-weight:700}
+    .usage-detail{font-size:15px;line-height:1.5;font-weight:800;word-break:break-word}
+    .usage-separator{padding:0 4px;color:#94a3b8}
+    .task-details{margin-top:10px;border:1px solid #d7e0ea;border-radius:8px;overflow:hidden;background:#fff}
+    .task-details summary{padding:10px 12px;color:#475569;font-size:13px;font-weight:700;cursor:pointer;list-style:none}
+    .task-details summary::-webkit-details-marker{display:none}
+    .task-details summary::after{content:'展开';float:right;color:#0891b2}
+    .task-details[open] summary::after{content:'收起'}
+    .task-details pre{margin:0;border-radius:0;border-top:1px solid #d7e0ea;max-height:200px}
     pre{white-space:pre-wrap;background:#0f172a;color:#d1fae5;border-radius:8px;padding:12px;overflow:auto;font-size:12px;max-height:260px;margin-top:10px}
     .ota-form{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin-bottom:10px}
     .ota-form label{display:grid;gap:5px;font-size:13px;color:#5c6878}
@@ -107,12 +116,23 @@
   <div class="panel">
     <h2>💻 系统信息 <span style="font-weight:400;font-size:13px;color:#5c6878" id="debug-uptime">运行时间 --</span></h2>
     <div class="sys-grid">
-      <div class="sys-item"><div class="label">内部堆</div><div class="value" id="internal-heap">--</div></div>
-      <div class="sys-item"><div class="label">PSRAM</div><div class="value" id="psram">--</div></div>
-      <div class="sys-item"><div class="label">历史最低剩余</div><div class="value" id="min-heap">--</div></div>
-      <div class="sys-item"><div class="label">最大连续块</div><div class="value" id="largest-block">--</div></div>
+      <div class="sys-item">
+        <div class="label">内部堆</div>
+        <div class="usage-total" id="internal-heap-total">总量 --</div>
+        <div class="usage-detail" id="internal-heap-detail"><span id="internal-heap-used">已用 --</span><span class="usage-separator">；</span><span id="internal-heap-free">剩余 --</span></div>
+      </div>
+      <div class="sys-item">
+        <div class="label">PSRAM</div>
+        <div class="usage-total" id="psram-total">总量 --</div>
+        <div class="usage-detail" id="psram-detail"><span id="psram-used">已用 --</span><span class="usage-separator">；</span><span id="psram-free">剩余 --</span></div>
+      </div>
+      <div class="sys-item secondary"><div class="label">历史最低剩余</div><div class="value" id="min-heap">--</div></div>
+      <div class="sys-item secondary"><div class="label">最大连续块</div><div class="value" id="largest-block">--</div></div>
     </div>
-    <pre id="task-list">任务列表加载中...</pre>
+    <details class="task-details">
+      <summary>任务列表（栈剩余）</summary>
+      <pre id="task-list">任务列表加载中...</pre>
+    </details>
     <div style="margin-top:8px;font-size:12px;color:#9ca3af">
       固件: <span id="build-id">--</span> | 构建时间: <span id="build-ts">--</span>
     </div>
@@ -140,24 +160,46 @@ const AP_PASS = 'template1234';
 document.getElementById('ap-pass').textContent = AP_PASS;
 
 /* ── format helpers ────────────────────────────────────────────────── */
-function formatBytes(n) {
-  if (n >= 1048576) return (n/1048576).toFixed(1) + ' MB';
+function formatBytes(n, mbDigits) {
+  n = Number(n);
+  if (!Number.isFinite(n) || n < 0) return '--';
+  if (n >= 1048576) return (n/1048576).toFixed(mbDigits === undefined ? 1 : mbDigits) + ' MB';
   if (n >= 1024) return (n/1024).toFixed(1) + ' KB';
   return n + ' B';
+}
+function formatPercent(ratio) {
+  const percent = Number(ratio) * 100;
+  if (!Number.isFinite(percent)) return '--';
+  if (percent > 0 && percent < 0.01) return '<0.01';
+  const digits = percent < 1 || percent > 99 ? 2 : 0;
+  return percent.toFixed(digits).replace(/\.0+$/, '').replace(/(\.\d)0$/, '$1');
 }
 function formatUsage(used, total, free) {
   total = Number(total);
   used = Number(used);
   free = Number(free);
-  if (!Number.isFinite(total) || total <= 0) return 'N/A';
+  if (!Number.isFinite(total) || total <= 0) {
+    return {total: '总量 N/A', used: '已用 N/A', free: '剩余 N/A'};
+  }
   if (!Number.isFinite(used)) used = Math.max(0, total - free);
   if (!Number.isFinite(free)) free = Math.max(0, total - used);
   used = Math.max(0, Math.min(total, used));
   free = Math.max(0, Math.min(total, free));
-  const usedPct = Math.round((used / total) * 100);
-  const freePct = Math.round((free / total) * 100);
-  return '已用 ' + formatBytes(used) + '（' + usedPct + '%） / 总量 ' + formatBytes(total) +
-    '；剩余 ' + formatBytes(free) + '（' + freePct + '%）';
+  const totalDigits = total >= 1048576 ? 2 : undefined;
+  const freeDigits = free >= 1048576 ? 3 : undefined;
+  return {
+    total: '总量 ' + formatBytes(total, totalDigits),
+    used: '已用 ' + formatBytes(used, used >= 1048576 ? 2 : undefined) +
+      '（' + formatPercent(used / total) + '%）',
+    free: '剩余 ' + formatBytes(free, freeDigits) +
+      '（' + formatPercent(free / total) + '%）'
+  };
+}
+function renderUsage(prefix, used, total, free) {
+  const usage = formatUsage(used, total, free);
+  document.getElementById(prefix + '-total').textContent = usage.total;
+  document.getElementById(prefix + '-used').textContent = usage.used;
+  document.getElementById(prefix + '-free').textContent = usage.free;
 }
 function formatUptime(ms) {
   if (!ms) return '--';
@@ -195,12 +237,10 @@ async function refresh() {
   try {
     const r = await fetch('/debug.json');
     const d = await r.json();
-    document.getElementById('internal-heap').textContent =
-      formatUsage(d.internal_used_heap, d.internal_total_heap, d.internal_free_heap);
+    renderUsage('internal-heap', d.internal_used_heap, d.internal_total_heap, d.internal_free_heap);
     document.getElementById('min-heap').textContent = formatBytes(d.internal_min_free_heap);
     document.getElementById('largest-block').textContent = formatBytes(d.internal_largest_free_block);
-    document.getElementById('psram').textContent = formatUsage(
-      d.psram_used_heap, d.psram_total_heap, d.psram_free_heap);
+    renderUsage('psram', d.psram_used_heap, d.psram_total_heap, d.psram_free_heap);
     document.getElementById('debug-uptime').textContent = '运行时间 ' + formatUptime(d.uptime_ms);
     document.getElementById('task-list').textContent = d.task_list || '(无任务信息)';
   } catch(e) { console.error('debug', e); }

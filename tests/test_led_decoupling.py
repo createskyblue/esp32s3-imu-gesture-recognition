@@ -238,12 +238,20 @@ class ComponentBoundaryTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        for element_id in ["internal-heap", "psram"]:
+        for element_id in [
+            "internal-heap-total",
+            "internal-heap-detail",
+            "psram-total",
+            "psram-detail",
+        ]:
             self.assertRegex(source, rf'id="{element_id}"')
         self.assertIn("已用", source)
         self.assertIn("剩余", source)
         self.assertIn("；", source)
         self.assertIn("formatUsage", source)
+        self.assertIn("formatPercent", source)
+        self.assertIn('class="task-details"', source)
+        self.assertIn("任务列表（栈剩余）", source)
 
     def test_wifi_manager_preserves_valid_boundary_lengths(self):
         source = (
