@@ -403,11 +403,17 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
         esp_netif_dns_info_t dns_info = {0};
         dns_info.ip.u_addr.ip4.addr = esp_ip4addr_aton("192.168.4.1");
         dns_info.ip.type = ESP_IPADDR_TYPE_V4;
+        uint8_t dns_offer_enabled = 1u;
         ESP_RETURN_ON_ERROR(
             esp_netif_dhcps_option(s_ap_netif, ESP_NETIF_OP_SET,
                                    ESP_NETIF_DOMAIN_NAME_SERVER,
-                                   &dns_info, sizeof(dns_info)),
+                                   &dns_offer_enabled,
+                                   sizeof(dns_offer_enabled)),
             TAG, "SoftAP DHCP DNS option failed");
+        ESP_RETURN_ON_ERROR(
+            esp_netif_set_dns_info(s_ap_netif, ESP_NETIF_DNS_MAIN,
+                                   &dns_info),
+            TAG, "SoftAP DNS address failed");
     }
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();

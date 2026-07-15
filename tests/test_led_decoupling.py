@@ -202,6 +202,23 @@ class ComponentBoundaryTests(unittest.TestCase):
             r"sizeof\(DNS_A_ANSWER_TEMPLATE\)\s*\]",
         )
 
+    def test_softap_dhcp_dns_uses_offer_flag_and_dns_address(self):
+        source = (
+            PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.c"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("uint8_t dns_offer_enabled = 1u", source)
+        self.assertRegex(
+            source,
+            r"esp_netif_dhcps_option\([^;]+ESP_NETIF_DOMAIN_NAME_SERVER,"
+            r"\s*&dns_offer_enabled,\s*sizeof\(dns_offer_enabled\)\)",
+        )
+        self.assertRegex(
+            source,
+            r"esp_netif_set_dns_info\(s_ap_netif,\s*ESP_NETIF_DNS_MAIN,"
+            r"\s*&dns_info\)",
+        )
+
     def test_wifi_manager_preserves_valid_boundary_lengths(self):
         source = (
             PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.c"
