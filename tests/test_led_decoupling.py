@@ -250,7 +250,11 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertIn("；", source)
         self.assertIn("formatUsage", source)
         self.assertIn("formatPercent", source)
-        self.assertIn('class="task-details"', source)
+        self.assertIn('class="task-label"', source)
+        self.assertIn('<pre id="task-list">', source)
+        self.assertNotIn('class="task-details"', source)
+        self.assertIn("max-height:none", source)
+        self.assertIn("overflow:visible", source)
         self.assertIn("任务列表（栈剩余）", source)
 
     def test_wifi_manager_preserves_valid_boundary_lengths(self):

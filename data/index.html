@@ -44,13 +44,8 @@
     .usage-total{margin-top:4px;color:#475569;font-size:13px;font-weight:700}
     .usage-detail{font-size:15px;line-height:1.5;font-weight:800;word-break:break-word}
     .usage-separator{padding:0 4px;color:#94a3b8}
-    .task-details{margin-top:10px;border:1px solid #d7e0ea;border-radius:8px;overflow:hidden;background:#fff}
-    .task-details summary{padding:10px 12px;color:#475569;font-size:13px;font-weight:700;cursor:pointer;list-style:none}
-    .task-details summary::-webkit-details-marker{display:none}
-    .task-details summary::after{content:'展开';float:right;color:#0891b2}
-    .task-details[open] summary::after{content:'收起'}
-    .task-details pre{margin:0;border-radius:0;border-top:1px solid #d7e0ea;max-height:200px}
-    pre{white-space:pre-wrap;background:#0f172a;color:#d1fae5;border-radius:8px;padding:12px;overflow:auto;font-size:12px;max-height:260px;margin-top:10px}
+    .task-label{margin-top:10px;padding:10px 12px 0;color:#475569;font-size:13px;font-weight:700}
+    pre{white-space:pre-wrap;background:#0f172a;color:#d1fae5;border-radius:8px;padding:12px;overflow:visible;font-size:12px;max-height:none;margin-top:6px}
     .ota-form{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin-bottom:10px}
     .ota-form label{display:grid;gap:5px;font-size:13px;color:#5c6878}
     .ota-progress{margin-top:6px;height:12px;border-radius:999px;background:#e5e7eb;overflow:hidden;border:1px solid #d7e0ea}
@@ -129,10 +124,8 @@
       <div class="sys-item secondary"><div class="label">历史最低剩余</div><div class="value" id="min-heap">--</div></div>
       <div class="sys-item secondary"><div class="label">最大连续块</div><div class="value" id="largest-block">--</div></div>
     </div>
-    <details class="task-details">
-      <summary>任务列表（栈剩余）</summary>
-      <pre id="task-list">任务列表加载中...</pre>
-    </details>
+    <div class="task-label">任务列表（栈剩余）</div>
+    <pre id="task-list">任务列表加载中...</pre>
     <div style="margin-top:8px;font-size:12px;color:#9ca3af">
       固件: <span id="build-id">--</span> | 构建时间: <span id="build-ts">--</span>
     </div>
