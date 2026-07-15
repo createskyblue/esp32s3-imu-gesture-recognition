@@ -37,10 +37,10 @@
     .wifi-message{margin-top:10px;min-height:20px;font-size:13px;color:#5c6878}
     .wifi-message.success{color:#166534}
     .wifi-message.error{color:#991b1b}
-    .sys-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
-    .sys-item{border:1px solid #d7e0ea;border-radius:8px;padding:10px;text-align:center}
+    .sys-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+    .sys-item{border:1px solid #d7e0ea;border-radius:8px;padding:12px;text-align:left;background:#fbfdff}
     .sys-item .label{font-size:12px;color:#5c6878;margin-bottom:2px}
-    .sys-item .value{font-size:20px;font-weight:800}
+    .sys-item .value{font-size:16px;line-height:1.45;font-weight:800;word-break:break-word}
     pre{white-space:pre-wrap;background:#0f172a;color:#d1fae5;border-radius:8px;padding:12px;overflow:auto;font-size:12px;max-height:260px;margin-top:10px}
     .ota-form{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin-bottom:10px}
     .ota-form label{display:grid;gap:5px;font-size:13px;color:#5c6878}
@@ -107,10 +107,10 @@
   <div class="panel">
     <h2>💻 系统信息 <span style="font-weight:400;font-size:13px;color:#5c6878" id="debug-uptime">运行时间 --</span></h2>
     <div class="sys-grid">
-      <div class="sys-item"><div class="label">内部空闲堆</div><div class="value" id="free-heap">--</div></div>
-      <div class="sys-item"><div class="label">内部最小堆</div><div class="value" id="min-heap">--</div></div>
-      <div class="sys-item"><div class="label">最大可用块</div><div class="value" id="largest-block">--</div></div>
+      <div class="sys-item"><div class="label">内部堆</div><div class="value" id="internal-heap">--</div></div>
       <div class="sys-item"><div class="label">PSRAM</div><div class="value" id="psram">--</div></div>
+      <div class="sys-item"><div class="label">历史最低剩余</div><div class="value" id="min-heap">--</div></div>
+      <div class="sys-item"><div class="label">最大连续块</div><div class="value" id="largest-block">--</div></div>
     </div>
     <pre id="task-list">任务列表加载中...</pre>
     <div style="margin-top:8px;font-size:12px;color:#9ca3af">
@@ -144,6 +144,20 @@ function formatBytes(n) {
   if (n >= 1048576) return (n/1048576).toFixed(1) + ' MB';
   if (n >= 1024) return (n/1024).toFixed(1) + ' KB';
   return n + ' B';
+}
+function formatUsage(used, total, free) {
+  total = Number(total);
+  used = Number(used);
+  free = Number(free);
+  if (!Number.isFinite(total) || total <= 0) return 'N/A';
+  if (!Number.isFinite(used)) used = Math.max(0, total - free);
+  if (!Number.isFinite(free)) free = Math.max(0, total - used);
+  used = Math.max(0, Math.min(total, used));
+  free = Math.max(0, Math.min(total, free));
+  const usedPct = Math.round((used / total) * 100);
+  const freePct = Math.round((free / total) * 100);
+  return '已用 ' + formatBytes(used) + '（' + usedPct + '%） / 总量 ' + formatBytes(total) +
+    '；剩余 ' + formatBytes(free) + '（' + freePct + '%）';
 }
 function formatUptime(ms) {
   if (!ms) return '--';
@@ -181,10 +195,12 @@ async function refresh() {
   try {
     const r = await fetch('/debug.json');
     const d = await r.json();
-    document.getElementById('free-heap').textContent = formatBytes(d.internal_free_heap);
+    document.getElementById('internal-heap').textContent =
+      formatUsage(d.internal_used_heap, d.internal_total_heap, d.internal_free_heap);
     document.getElementById('min-heap').textContent = formatBytes(d.internal_min_free_heap);
     document.getElementById('largest-block').textContent = formatBytes(d.internal_largest_free_block);
-    document.getElementById('psram').textContent = d.psram_free_heap > 0 ? formatBytes(d.psram_free_heap) : 'N/A';
+    document.getElementById('psram').textContent = formatUsage(
+      d.psram_used_heap, d.psram_total_heap, d.psram_free_heap);
     document.getElementById('debug-uptime').textContent = '运行时间 ' + formatUptime(d.uptime_ms);
     document.getElementById('task-list').textContent = d.task_list || '(无任务信息)';
   } catch(e) { console.error('debug', e); }

@@ -391,14 +391,28 @@ static esp_err_t debug_json_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "min_free_heap", esp_get_minimum_free_heap_size());
     cJSON_AddNumberToObject(root, "largest_free_block",
                             heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
-    cJSON_AddNumberToObject(root, "internal_free_heap",
-                            heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    const uint32_t internal_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    const size_t internal_total = heap_caps_get_total_size(internal_caps);
+    const size_t internal_free = heap_caps_get_free_size(internal_caps);
+    const size_t internal_used = internal_total >= internal_free
+                                     ? internal_total - internal_free
+                                     : 0u;
+    cJSON_AddNumberToObject(root, "internal_total_heap", internal_total);
+    cJSON_AddNumberToObject(root, "internal_used_heap", internal_used);
+    cJSON_AddNumberToObject(root, "internal_free_heap", internal_free);
     cJSON_AddNumberToObject(root, "internal_min_free_heap",
-                            heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+                            heap_caps_get_minimum_free_size(internal_caps));
     cJSON_AddNumberToObject(root, "internal_largest_free_block",
-                            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    cJSON_AddNumberToObject(root, "psram_free_heap",
-                            heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                            heap_caps_get_largest_free_block(internal_caps));
+    const uint32_t psram_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    const size_t psram_total = heap_caps_get_total_size(psram_caps);
+    const size_t psram_free = heap_caps_get_free_size(psram_caps);
+    const size_t psram_used = psram_total >= psram_free
+                                  ? psram_total - psram_free
+                                  : 0u;
+    cJSON_AddNumberToObject(root, "psram_total_heap", psram_total);
+    cJSON_AddNumberToObject(root, "psram_used_heap", psram_used);
+    cJSON_AddNumberToObject(root, "psram_free_heap", psram_free);
 
 #if configUSE_TRACE_FACILITY && configUSE_STATS_FORMATTING_FUNCTIONS
     char *task_buf = malloc(2048);

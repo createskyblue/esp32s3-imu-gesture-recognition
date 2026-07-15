@@ -219,6 +219,32 @@ class ComponentBoundaryTests(unittest.TestCase):
             r"\s*&dns_info\)",
         )
 
+    def test_debug_endpoint_exposes_heap_capacity_and_usage(self):
+        source = (PROJECT_ROOT / "main" / "web_platform.c").read_text(
+            encoding="utf-8"
+        )
+
+        for field in [
+            '"internal_total_heap"',
+            '"internal_used_heap"',
+            '"psram_total_heap"',
+            '"psram_used_heap"',
+        ]:
+            self.assertIn(field, source)
+        self.assertIn("heap_caps_get_total_size", source)
+
+    def test_system_info_formats_used_total_remaining_and_percentage(self):
+        source = (PROJECT_ROOT / "data" / "index.html").read_text(
+            encoding="utf-8"
+        )
+
+        for element_id in ["internal-heap", "psram"]:
+            self.assertRegex(source, rf'id="{element_id}"')
+        self.assertIn("已用", source)
+        self.assertIn("剩余", source)
+        self.assertIn("；", source)
+        self.assertIn("formatUsage", source)
+
     def test_wifi_manager_preserves_valid_boundary_lengths(self):
         source = (
             PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.c"
