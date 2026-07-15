@@ -257,6 +257,39 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertIn("overflow:visible", source)
         self.assertIn("任务列表（栈剩余）", source)
 
+    def test_default_file_manager_does_not_advertise_unconfigured_sd(self):
+        web_source = (PROJECT_ROOT / "main" / "web_platform.c").read_text(
+            encoding="utf-8"
+        )
+        files_source = (PROJECT_ROOT / "data" / "files.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(".sd_mount_point = NULL", web_source)
+        self.assertNotIn("OPTIONAL_SD_MOUNT_POINT", web_source)
+        self.assertIn("updateOptionalStorageTabs", files_source)
+        self.assertIn("tab.hidden=data.mounted!==true", files_source)
+
+    def test_default_build_does_not_register_hello_example(self):
+        main_source = (PROJECT_ROOT / "main" / "main.c").read_text(
+            encoding="utf-8"
+        )
+        cmake_source = (PROJECT_ROOT / "main" / "CMakeLists.txt").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn('#include "hello_web.h"', main_source)
+        self.assertNotIn("hello_web_register", main_source)
+        self.assertNotIn('"hello_web.c"', cmake_source)
+
+    def test_defaults_do_not_enable_unused_runtime_features(self):
+        defaults = (PROJECT_ROOT / "sdkconfig.defaults").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y", defaults)
+        self.assertNotIn("CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT=y", defaults)
+
     def test_wifi_manager_preserves_valid_boundary_lengths(self):
         source = (
             PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.c"

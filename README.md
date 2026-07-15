@@ -62,7 +62,7 @@
 | `/ota/upload/firmware` | 上传固件刷写 |
 | `/ota/upload/filesystem` | 上传文件系统镜像 |
 | `/api/fs` | 文件管理 API（list/download/delete/mkdir/upload） |
-| `/hello` | Hello World 示例端点（自定义业务模板） |
+| `/hello` | 可选 Hello World 示例端点（默认未注册） |
 
 ## 快速开始
 
@@ -98,7 +98,7 @@ idf.py -p COMx flash monitor
 │   ├── app_storage.c/.h        # 应用存储所有者：挂载 LittleFS
 │   ├── wifi_config_store.c/.h  # WiFi 凭据 JSON 读写（应用层）
 │   ├── web_platform.c/.h       # HTTP 服务器 + 页面路由 + Web 组件编排
-│   ├── hello_web.c/.h          # ★ 自定义 HTTP 端点模板（从这里开始写业务）
+│   ├── hello_web.c/.h          # 可选自定义 HTTP 端点示例（从这里开始写业务）
 │   └── wifi_config.example.json
 ├── data/
 │   ├── index.html              # 仪表盘首页
@@ -119,17 +119,17 @@ idf.py -p COMx flash monitor
 
 1. `main/main.c` — 启动编排，先挂载 LittleFS、加载 JSON，再把凭据传给 WiFi
 2. `main/web_platform.c` — HTTP / OTA / 配网 / 仪表盘
-3. `main/hello_web.c/.h` — 业务端点模板，从这里开始写你的 HTTP handler
+3. `main/hello_web.c/.h` — 可选业务端点示例；需要时再加入默认构建
 
-**三步添加自定义端点：**
+**启用示例端点并添加自定义业务：**
 
 ```c
-// 1. 在 hello_web.c 中仿照 hello_handler() 写你的 handler
-// 2. 在 hello_web_register() 中注册新的 URI
-// 3. main.c 中的注册流程已就绪：
-//    web_platform_init()
-//    hello_web_register(web_platform_get_server())   // ← 你的业务
-//    web_platform_register_static_fallback()          // 必须最后
+// 1. 在 main/CMakeLists.txt 的 SRCS 中加入 "hello_web.c"
+// 2. 在 main.c 中加入头文件和注册调用：
+//    #include "hello_web.h"
+//    hello_web_register(web_platform_get_server())
+// 3. 在 hello_web.c 中仿照 hello_handler() 写你的 handler
+// 4. web_platform_register_static_fallback() 仍必须最后调用
 ```
 
 **更复杂的场景**：直接在 `components/` 下新建独立组件，在 `main/CMakeLists.txt` 中添加依赖即可。
@@ -165,7 +165,7 @@ if (sd_err != ESP_OK) {
 }
 ```
 
-文件管理器的内部存储分区、内部挂载点和可选 SD 挂载点由应用层传入；未挂载 SD 时只会报告该后端不可用。
+文件管理器的内部存储分区、内部挂载点和可选 SD 挂载点由应用层传入。默认模板只配置 LittleFS，文件管理页面会隐藏未配置的 SD 后端；用户启用 SD 并传入挂载点后，原有 SD 文件管理接口仍可用。
 
 ### 可选启用 SD 日志
 

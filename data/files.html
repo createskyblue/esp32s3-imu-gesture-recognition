@@ -287,6 +287,17 @@ async function loadDirectory(fs,path){
   }
 }
 
+async function updateOptionalStorageTabs(){
+  const tab=document.getElementById('tabSd');
+  try{
+    const resp=await requestJson('list',{fs:'sd',path:'/'});
+    const data=await resp.json();
+    tab.hidden=data.mounted!==true;
+  }catch(e){
+    tab.hidden=true;
+  }
+}
+
 function renderTable(){
   const tbody=document.getElementById('fileList');
   if(!entries.length){
@@ -532,6 +543,7 @@ dropZone.addEventListener('dragover',event=>{event.preventDefault();dropZone.cla
 dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('dragover'));
 dropZone.addEventListener('drop',handleDrop);
 
+updateOptionalStorageTabs();
 loadDirectory(currentFs,currentPath);
   </script>
 </body>

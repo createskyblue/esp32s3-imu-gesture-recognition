@@ -22,7 +22,6 @@
 
 /* ── constants ─────────────────────────────────────────────────────────── */
 #define LITTLEFS_INDEX_PATH          APP_LITTLEFS_BASE_PATH "/index.html"
-#define OPTIONAL_SD_MOUNT_POINT      "/sdcard"
 #define HTTP_FILE_BUFFER_BYTES       1024u
 #define HTTP_JSON_BUFFER_BYTES       512u
 
@@ -508,7 +507,7 @@ esp_err_t web_platform_init(void)
     const file_manager_storage_config_t file_manager_config = {
         .internal_mount_point = APP_LITTLEFS_BASE_PATH,
         .internal_partition_label = APP_LITTLEFS_PARTITION_LABEL,
-        .sd_mount_point = OPTIONAL_SD_MOUNT_POINT,
+        .sd_mount_point = NULL,
     };
     const ota_manager_config_t ota_config = {
         .filesystem_partition_label = APP_LITTLEFS_PARTITION_LABEL,

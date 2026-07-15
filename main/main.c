@@ -5,7 +5,6 @@
 #include <time.h>
 
 #include "app_storage.h"
-#include "hello_web.h"
 #include "led_task.h"
 #include "web_platform.h"
 #include "wifi_config_store.h"
@@ -64,9 +63,6 @@ void app_main(void)
 
     /* ── 平台基础 Web 服务（HTTP + OTA + 文件管理） ───────── */
     ESP_ERROR_CHECK(web_platform_init());
-
-    /* ── 自定义业务端点 ────────────────────────────────────── */
-    hello_web_register(web_platform_get_server());
 
     /* ── 静态文件回退 ── 必须最后注册 ──────────────────────── */
     ESP_ERROR_CHECK(web_platform_register_static_fallback());

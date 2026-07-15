@@ -1,4 +1,4 @@
-idf_component_register(SRCS "main.c" "hello_web.c" "web_platform.c"
+idf_component_register(SRCS "main.c" "web_platform.c"
                          "app_storage.c" "wifi_config_store.c"
                     INCLUDE_DIRS "."
                     REQUIRES wifi_manager ota_manager file_manager led_task cjson
