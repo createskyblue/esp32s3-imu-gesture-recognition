@@ -5,58 +5,92 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>ESP32-S3 模板</title>
   <style>
+    :root{
+      --bg:#F5F7FA;--card:#FFFFFF;--line:#E8ECF1;
+      --text:#1F2937;--muted:#6B7280;--faint:#9CA3AF;
+      --primary:#0EA5E9;--primary-deep:#0284C7;--primary-bg:#E0F2FE;
+      --violet:#8B5CF6;--violet-bg:#EDE9FE;
+      --ok:#10B981;--ok-bg:#D1FAE5;
+      --warn:#F59E0B;--warn-bg:#FEF3C7;
+      --err:#EF4444;--err-bg:#FEE2E2;
+      --info:#3B82F6;--info-bg:#DBEAFE;
+      --radius-lg:20px;--radius-md:14px;--radius-sm:10px;
+      --shadow:0 10px 40px -10px rgba(15,23,42,.07);
+      --shadow-hover:0 18px 45px -12px rgba(15,23,42,.12);
+      --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,"Microsoft YaHei",sans-serif;
+    }
     *{box-sizing:border-box;margin:0;padding:0}
-    body{min-height:100vh;padding:16px;font-family:Arial,'Microsoft YaHei',sans-serif;background:#eef3f7;color:#172033}
-    main{width:min(960px,100%);margin:0 auto;display:grid;gap:14px}
-    h1{margin:0 0 4px;font-size:28px;line-height:1.15}
-    h2{margin:0 0 10px;font-size:17px;color:#374151}
-    button,input,select{border:1px solid #97acbf;border-radius:8px;padding:10px 12px;cursor:pointer;font-size:14px}
-    button{background:#eaf4f2;color:#172033;font-weight:700}
-    button:disabled{opacity:.5;cursor:not-allowed}
-    button.primary{background:#0891b2;border-color:#0891b2;color:#fff}
-    button.primary:hover:not(:disabled){background:#0e7490}
-    input{width:100%;background:#fff;color:#172033;border:1px solid #b8c7d4}
-    input[type=file]{padding:8px;font-size:13px}
-    .top{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:4px}
-    .actions{display:flex;gap:8px;flex-wrap:wrap}
-    .panel{background:#fff;border:1px solid #d7e0ea;border-radius:8px;padding:18px}
-    .subtitle{color:#5c6878;font-size:14px;margin-top:2px}
-    .network-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
-    .card{border:1px solid #d7e0ea;border-radius:8px;padding:14px;background:#fbfdff}
-    .card h3{font-size:14px;color:#5c6878;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px}
-    .card .value{font-size:22px;font-weight:800;color:#172033;word-break:break-all}
-    .card .value.ok{color:#166534}
-    .card .value.wait{color:#92400e}
-    .card .label-row{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
-    .badge{display:inline-block;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:800}
-    .badge.ok{background:#dcfce7;color:#166534}
-    .badge.warn{background:#fef3c7;color:#92400e}
-    .badge.info{background:#dbeafe;color:#1e40af}
-    .wifi-form{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin-top:12px}
-    .wifi-form label{display:grid;gap:5px;font-size:13px;color:#5c6878}
-    .wifi-message{margin-top:10px;min-height:20px;font-size:13px;color:#5c6878}
-    .wifi-message.success{color:#166534}
-    .wifi-message.error{color:#991b1b}
-    .sys-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-    .sys-item{border:1px solid #d7e0ea;border-radius:8px;padding:12px;text-align:left;background:#fbfdff}
-    .sys-item .label{font-size:12px;color:#5c6878;margin-bottom:2px}
-    .usage-summary{font-size:15px;line-height:1.4;word-break:break-word;color:#172033}
-    .mem-row{display:flex;align-items:center;gap:8px;margin-top:6px}
-    .mem-bar{flex:1;height:6px;border-radius:999px;background:#e5e7eb;overflow:hidden}
-    .mem-bar span{display:block;height:100%;width:0;background:#16a34a;transition:width .3s ease}
-    .mem-bar.warn span{background:#f59e0b}
-    .mem-bar.danger span{background:#dc2626}
-    .mem-pct{min-width:40px;text-align:right;font-size:13px;color:#475569}
-    .mem-sub{margin-top:6px;font-size:12px;color:#5c6878}
-    .task-label{margin-top:10px;padding:10px 12px 0;color:#475569;font-size:13px;font-weight:700}
-    pre{white-space:pre-wrap;background:#0f172a;color:#d1fae5;border-radius:8px;padding:12px;overflow:visible;font-size:12px;max-height:none;margin-top:6px}
-    .ota-form{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin-bottom:10px}
-    .ota-form label{display:grid;gap:5px;font-size:13px;color:#5c6878}
-    .ota-progress{margin-top:6px;height:12px;border-radius:999px;background:#e5e7eb;overflow:hidden;border:1px solid #d7e0ea}
-    .ota-progress span{display:block;height:100%;width:0;background:#0891b2;transition:width .3s ease}
-    .ota-status{margin-top:6px;font-size:13px;color:#5c6878;min-height:18px}
-    footer{margin-top:8px;text-align:center;color:#9ca3af;font-size:12px}
-    @media(max-width:760px){body{padding:10px}.network-grid,.sys-grid,.wifi-form,.ota-form{grid-template-columns:1fr}}
+    body{min-height:100vh;padding:24px;font-family:var(--font);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;line-height:1.5}
+    main{width:min(1080px,100%);margin:0 auto;display:grid;gap:18px}
+    h1{margin:0;font-size:26px;line-height:1.15;letter-spacing:-.3px}
+    h2{display:flex;align-items:center;gap:8px;margin:0 0 14px;font-size:16px;font-weight:600;color:var(--text)}
+    .h2-meta{margin-left:auto;font-weight:400;font-size:12.5px;color:var(--faint)}
+    button,input,select{font-family:inherit;font-size:14px}
+    button{border:1px solid var(--line);background:#fff;color:var(--text);border-radius:999px;padding:10px 18px;font-weight:600;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.05);transition:transform .15s,box-shadow .15s,border-color .15s}
+    button:hover:not(:disabled){transform:translateY(-1px);box-shadow:var(--shadow-hover);border-color:#CBD5E1}
+    button:disabled{opacity:.5;cursor:not-allowed;transform:none}
+    button.primary{background:#0EA5E9;border:0;color:#fff;box-shadow:0 2px 8px -2px rgba(14,165,233,.4)}
+    button.primary:hover:not(:disabled){background:#0284C7;box-shadow:0 4px 12px -4px rgba(14,165,233,.5)}
+    input{border:1px solid var(--line);background:#fff;color:var(--text);border-radius:12px;padding:10px 14px;width:100%;transition:border-color .15s,box-shadow .15s}
+    input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(14,165,233,.14)}
+    input::placeholder{color:var(--faint)}
+    input[type=file]{padding:10px;font-size:13px;background:#F8FAFC}
+    input[type=file]::file-selector-button{border:0;background:var(--primary-bg);color:var(--primary-deep);border-radius:8px;padding:6px 12px;font-weight:600;cursor:pointer;margin-right:10px}
+    .top{display:flex;gap:14px;align-items:center;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap}
+    .subtitle{color:var(--muted);font-size:14px;margin-top:3px}
+    .actions{display:flex;gap:10px;flex-wrap:wrap}
+    .panel{background:var(--card);border-radius:var(--radius-lg);padding:22px;box-shadow:var(--shadow)}
+    .network-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px}
+    .card{background:linear-gradient(180deg,#fff,#F8FAFC);border:1px solid var(--line);border-radius:var(--radius-md);padding:16px;box-shadow:0 2px 6px rgba(15,23,42,.04)}
+    .card-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+    .card-head h3{margin:0;font-size:14px;font-weight:600;color:var(--muted)}
+    .card-icon{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-size:18px;flex:none}
+    .card-icon.net{background:var(--primary-bg)}
+    .card-icon.ap{background:var(--violet-bg)}
+    .card .value{font-size:22px;font-weight:800;color:var(--text);word-break:break-all;letter-spacing:-.3px}
+    .card .value.ok{color:var(--ok)}
+    .card .value.wait{color:var(--warn)}
+    .card .label-row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+    .meta-row{display:flex;justify-content:space-between;gap:12px;margin-top:7px;font-size:13px;color:var(--muted)}
+    .meta-val{color:var(--text);font-weight:600;word-break:break-all;text-align:right}
+    .meta-val.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .badge{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:4px 12px;font-size:12px;font-weight:600;white-space:nowrap;background:#F1F5F9;color:var(--muted)}
+    .badge::before{content:'';width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+    .badge.ok{background:var(--ok-bg);color:var(--ok)}
+    .badge.warn{background:var(--warn-bg);color:var(--warn)}
+    .badge.info{background:var(--info-bg);color:var(--info)}
+    .section-sub{display:flex;align-items:center;gap:8px;margin:2px 0 12px;font-size:14px;font-weight:600;color:var(--muted)}
+    .wifi-form{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;margin-top:14px}
+    .wifi-form label{display:grid;gap:6px;font-size:13px;color:var(--muted)}
+    .wifi-message{margin-top:12px;min-height:20px;font-size:13px;color:var(--muted)}
+    .wifi-message.success{color:var(--ok)}
+    .wifi-message.error{color:var(--err)}
+    .sys-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+    .sys-item{background:linear-gradient(180deg,#fff,#F8FAFC);border:1px solid var(--line);border-radius:var(--radius-md);padding:16px}
+    .sys-item .label{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:9px;letter-spacing:.2px}
+    .sys-item .label::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--primary);flex:none}
+    .sys-item:nth-child(2) .label::before{background:var(--violet)}
+    .usage-summary{font-size:15px;font-weight:500;color:var(--text);word-break:break-word}
+    .mem-row{display:flex;align-items:center;gap:10px;margin-top:9px}
+    .mem-bar{flex:1;height:8px;border-radius:999px;background:#E8ECF1;overflow:hidden}
+    .mem-bar span{display:block;height:100%;width:0;background:linear-gradient(90deg,#10B981,#34D399);transition:width .3s ease}
+    .mem-bar.warn span{background:linear-gradient(90deg,#F59E0B,#FBBF24)}
+    .mem-bar.danger span{background:linear-gradient(90deg,#EF4444,#F87171)}
+    .mem-pct{min-width:42px;text-align:right;font-size:13px;font-weight:600;color:var(--muted)}
+    .mem-sub{margin-top:12px;display:grid;gap:3px;font-size:12px}
+    .mem-sub>div{display:flex;justify-content:space-between;gap:12px}
+    .ms-label{color:var(--faint)}
+    .ms-val{color:var(--muted);font-weight:600}
+    .task-label{margin-top:20px;margin-bottom:8px;color:var(--muted);font-size:13px;font-weight:600}
+    pre{white-space:pre-wrap;background:#0F172A;color:#94A3B8;border-radius:var(--radius-md);padding:16px;font-size:12.5px;line-height:1.65;overflow-x:auto}
+    .build-info{margin-top:12px;font-size:12px;color:var(--faint)}
+    .ota-form{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;margin-bottom:14px}
+    .ota-form label{display:grid;gap:6px;font-size:13px;color:var(--muted)}
+    .ota-progress{margin-top:4px;height:10px;border-radius:999px;background:#E8ECF1;overflow:hidden}
+    .ota-progress span{display:block;height:100%;width:0;background:linear-gradient(90deg,#0EA5E9,#38BDF8);transition:width .3s ease}
+    .ota-status{margin-top:8px;font-size:13px;color:var(--muted);min-height:18px}
+    footer{margin-top:6px;text-align:center;color:var(--faint);font-size:12px}
+    @media(max-width:760px){body{padding:16px}.top{flex-direction:column;align-items:flex-start}.network-grid,.sys-grid,.wifi-form,.ota-form{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
@@ -77,32 +111,32 @@
     <h2>📡 网络状态</h2>
     <div class="network-grid">
       <div class="card">
-        <h3>STA (连接路由器)</h3>
+        <div class="card-head">
+          <span class="card-icon net">📶</span>
+          <h3>STA · 连接路由器</h3>
+        </div>
         <div class="label-row">
           <span class="value" id="sta-status">--</span>
           <span class="badge" id="sta-badge">检测中</span>
         </div>
-        <div style="margin-top:8px;font-size:13px;color:#5c6878">
-          SSID: <b id="sta-ssid" style="color:#172033">--</b>
-        </div>
-        <div style="font-size:13px;color:#5c6878">
-          IP: <b id="sta-ip" style="color:#172033">--</b>
-        </div>
+        <div class="meta-row"><span>SSID</span><span class="meta-val" id="sta-ssid">--</span></div>
+        <div class="meta-row"><span>IP</span><span class="meta-val mono" id="sta-ip">--</span></div>
       </div>
       <div class="card">
-        <h3>AP (配置热点)</h3>
-        <div class="value" id="ap-ssid" style="font-size:20px">--</div>
-        <div style="margin-top:6px;font-size:13px;color:#5c6878">
-          IP: <b id="ap-ip" style="color:#172033">--</b>
+        <div class="card-head">
+          <span class="card-icon ap">📡</span>
+          <h3>AP · 配置热点</h3>
         </div>
-        <div style="font-size:13px;color:#5c6878">
-          密码: <b id="ap-pass" style="color:#172033">--</b>
+        <div class="label-row">
+          <span class="value" id="ap-ssid">--</span>
         </div>
+        <div class="meta-row"><span>IP</span><span class="meta-val mono" id="ap-ip">--</span></div>
+        <div class="meta-row"><span>密码</span><span class="meta-val mono" id="ap-pass">--</span></div>
       </div>
     </div>
 
     <!-- WiFi Config Form -->
-    <h2 style="margin-top:4px">🔧 WiFi 配网</h2>
+    <h3 class="section-sub">🔧 WiFi 配网</h3>
     <form id="wifi-form" class="wifi-form" onsubmit="event.preventDefault();saveWiFi()">
       <label>SSID（WiFi 名称）<input type="text" id="wifi-ssid" placeholder="请输入 WiFi 名称" maxlength="32"></label>
       <label>密码<input type="password" id="wifi-pass" placeholder="请输入 WiFi 密码" maxlength="63"></label>
@@ -113,7 +147,7 @@
 
   <!-- System Info -->
   <div class="panel">
-    <h2>💻 系统信息 <span style="font-weight:400;font-size:13px;color:#5c6878" id="debug-uptime">运行时间 --</span></h2>
+    <h2>💻 系统信息 <span class="h2-meta" id="debug-uptime">运行时间 --</span></h2>
     <div class="sys-grid">
       <div class="sys-item">
         <div class="label">内部堆</div>
@@ -122,7 +156,10 @@
           <div class="mem-bar" id="internal-heap-bar-wrap"><span id="internal-heap-bar"></span></div>
           <span class="mem-pct" id="internal-heap-pct">--</span>
         </div>
-        <div class="mem-sub">历史最低剩余 <span id="internal-min-heap">--</span> · 最大连续块 <span id="internal-largest-block">--</span></div>
+        <div class="mem-sub">
+          <div><span class="ms-label">历史最低剩余</span><span class="ms-val" id="internal-min-heap">--</span></div>
+          <div><span class="ms-label">最大连续块</span><span class="ms-val" id="internal-largest-block">--</span></div>
+        </div>
       </div>
       <div class="sys-item">
         <div class="label">PSRAM</div>
@@ -135,9 +172,7 @@
     </div>
     <div class="task-label">任务列表（栈剩余）</div>
     <pre id="task-list">任务列表加载中...</pre>
-    <div style="margin-top:8px;font-size:12px;color:#9ca3af">
-      固件: <span id="build-id">--</span> | 构建时间: <span id="build-ts">--</span>
-    </div>
+    <div class="build-info">固件: <span id="build-id">--</span> · 构建时间: <span id="build-ts">--</span></div>
   </div>
 
   <!-- OTA -->
