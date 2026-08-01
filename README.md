@@ -54,7 +54,7 @@
 | `/` | 仪表盘首页（WiFi 状态、配网表单、系统信息） |
 | `/files` | 文件管理器 |
 | `/files.html` | 文件管理器（独立页面） |
-| `/network.json` | 网络状态 JSON |
+| `/network.json` | 网络状态 JSON（含 STA/AP 信息、`ap_password`、`app_build_id`） |
 | `/wifi_config.json` | WiFi 配置读写（GET/POST） |
 | `/debug.json` | 系统调试信息 |
 | `/ota/status` | OTA 升级状态 |
@@ -96,21 +96,23 @@ idf.py -p COMx flash monitor
 ├── main/                       # 应用层（基础设施编排 + 业务端点）
 │   ├── main.c                  # 入口：LittleFS → LED心跳 → WiFi配置 → WiFi → Web
 │   ├── app_storage.c/.h        # 应用存储所有者：挂载 LittleFS
-│   ├── wifi_config_store.c/.h  # WiFi 凭据 JSON 读写（应用层）
+│   ├── wifi_config_store.c/.h  # WiFi 凭据 JSON 读写 + 应用事务（应用层）
+│   ├── app_config.h            # 应用身份标识（APP_BUILD_ID）——复制模板时改这里
 │   ├── web_platform.c/.h       # HTTP 服务器 + 页面路由 + Web 组件编排
 │   ├── hello_web.c/.h          # 可选自定义 HTTP 端点示例（从这里开始写业务）
 │   └── wifi_config.example.json
 ├── data/
+│   ├── common.css              # 双页面共享样式（设计 tokens + 按钮 + 布局基类）
 │   ├── index.html              # 仪表盘首页
 │   └── files.html              # 文件管理器页面
 └── components/
-    ├── wifi_manager/           # WiFi APSTA + 可选 DNS/SNTP（启动策略由调用方传入）
+    ├── wifi_manager/           # WiFi APSTA + 可选 DNS/SNTP + 时间同步回调（启动策略由调用方传入）
     ├── ota_manager/            # OTA 状态机 + 下载刷写 + 上传逻辑
     ├── file_manager/           # Web 文件管理器 API
     ├── led_task/               # 独立四路 LED 驱动（main 默认启用绿灯心跳）
-    ├── sd_card/                # SD 卡 SPI 驱动
+    ├── sd_card/                # SD 卡 SPI 驱动（配置化入口 sd_card_init_with_config）
     ├── sd_logger/              # 可选日志双写组件（默认未启用）
-    └── json/                   # cJSON 辅助组件
+    └── json/                   # 共享 HTTP/JSON 辅助（json_http.h/.c）
 ```
 
 ## 添加自己的业务
@@ -165,11 +167,20 @@ if (sd_err != ESP_OK) {
 }
 ```
 
+默认引脚为 MOSI=IO11、SCLK=IO12、MISO=IO13、CS=IO10，挂载点 `/sdcard`。如需自定义（例如换 CS 引脚或挂载点），使用配置化入口；未填的字段回退到模板默认值：
+
+```c
+sd_card_config_t cfg = { .mount_point = "/sdcard", .cs_io = 21 };
+esp_err_t sd_err = sd_card_init_with_config(&cfg);
+```
+
 文件管理器的内部存储分区、内部挂载点和可选 SD 挂载点由应用层传入。默认模板只配置 LittleFS，文件管理页面会隐藏未配置的 SD 后端；用户启用 SD 并传入挂载点后，原有 SD 文件管理接口仍可用。
 
 ### 可选启用 SD 日志
 
-默认固件不会初始化 `sd_logger`，WiFi、Web 等平台组件也不依赖它。需要日志双写时，由用户在自己的启动编排中显式依赖 `sd_logger`，并在 `sd_card_init()` 成功后调用 `sd_logger_init()`；如需在 SNTP 同步后切换时间戳文件名，可由用户自己的事件处理器调用 `sd_logger_notify_time_synced()`。
+默认固件不会初始化 `sd_logger`，WiFi、Web 等平台组件也不依赖它。需要日志双写时，由用户在自己的启动编排中显式依赖 `sd_logger`，并在 `sd_card_init()` 成功后调用 `sd_logger_init()`（默认日志目录 `/sdcard/log`；如需自定义目录，用 `sd_logger_init_with_config()` 传入，避免硬编码 SD 挂载点）。
+
+SNTP 同步后自动切换带时间戳的日志文件名：`wifi_manager` 提供对外回调钩子 `wifi_manager_set_time_synced_callback()`，在其中调用 `sd_logger_notify_time_synced()` 即可，无需重复注册 `NETIF_SNTP_EVENT` 事件处理器。
 
 ### LED 组件边界
 
