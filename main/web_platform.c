@@ -293,54 +293,15 @@ static esp_err_t wifi_config_post_handler(httpd_req_t *req)
                                   "cannot update WiFi configuration during OTA");
     }
 
-    esp_err_t err = wifi_config_store_stage(&wifi_credentials);
+    /* The transactional stage → apply → commit → rollback lives in the store. */
+    esp_err_t err = wifi_config_store_apply_credentials(&wifi_credentials);
+    app_storage_release();
     if (err != ESP_OK) {
-        (void)wifi_config_store_discard();
-        app_storage_release();
-        ESP_LOGW(TAG, "stage WiFi config failed: %s", esp_err_to_name(err));
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "failed to stage wifi config");
-        return ESP_FAIL;
-    }
-
-    wifi_manager_credentials_t previous_wifi_credentials;
-    wifi_manager_get_credentials(&previous_wifi_credentials);
-
-    err = wifi_manager_set_credentials(&wifi_credentials);
-    if (err != ESP_OK) {
-        (void)wifi_config_store_discard();
-        app_storage_release();
         ESP_LOGW(TAG, "apply WiFi config failed: %s", esp_err_to_name(err));
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "failed to apply wifi config; provisioning AP remains active");
+                            "failed to save wifi config");
         return ESP_FAIL;
     }
-
-    err = wifi_config_store_commit();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "commit WiFi config failed: %s", esp_err_to_name(err));
-        (void)wifi_config_store_discard();
-        const esp_err_t rollback_err =
-            wifi_manager_set_credentials(&previous_wifi_credentials);
-        if (rollback_err != ESP_OK) {
-            ESP_LOGE(TAG, "rollback WiFi config failed: %s",
-                     esp_err_to_name(rollback_err));
-            const esp_err_t safe_mode_err =
-                wifi_manager_enter_provisioning_mode();
-            if (safe_mode_err != ESP_OK) {
-                ESP_LOGE(TAG, "force provisioning mode failed: %s",
-                         esp_err_to_name(safe_mode_err));
-            }
-        }
-        app_storage_release();
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-            rollback_err == ESP_OK
-                ? "failed to commit wifi config; previous config restored"
-                : "failed to commit wifi config; provisioning AP enforced");
-        return ESP_FAIL;
-    }
-
-    app_storage_release();
 
     cJSON *resp = cJSON_CreateObject();
     if (resp == NULL) {

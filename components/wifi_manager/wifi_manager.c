@@ -41,6 +41,8 @@ static esp_timer_handle_t s_reconnect_timer;
 static uint32_t           s_reconnect_delay_ms = WIFI_STA_RECONNECT_INITIAL_DELAY_MS;
 static SemaphoreHandle_t   s_credentials_mutex;
 static bool                s_started;
+static wifi_manager_time_synced_cb_t s_time_synced_cb;
+static void               *s_time_synced_ctx;
 
 /* ── tiny helpers ──────────────────────────────────────────────────────── */
 static void copy_str(char *dest, size_t dest_size, const char *src)
@@ -265,6 +267,9 @@ static void sntp_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "SNTP time synced: %04d-%02d-%02d %02d:%02d:%02d UTC+8",
                  tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,
                  tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec);
+        if (s_time_synced_cb != NULL) {
+            s_time_synced_cb(s_time_synced_ctx);
+        }
     }
 }
 
@@ -579,4 +584,14 @@ const char *wifi_manager_get_ap_ssid(void) { return s_startup_config.ap_ssid; }
 const char *wifi_manager_get_ap_password(void)
 {
     return s_startup_config.ap_password;
+}
+
+esp_err_t wifi_manager_set_time_synced_callback(
+    wifi_manager_time_synced_cb_t callback, void *ctx)
+{
+    credentials_lock();
+    s_time_synced_cb = callback;
+    s_time_synced_ctx = ctx;
+    credentials_unlock();
+    return ESP_OK;
 }

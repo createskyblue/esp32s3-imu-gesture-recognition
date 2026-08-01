@@ -9,6 +9,9 @@
 #include <unistd.h>
 
 #include "cJSON.h"
+#include "esp_log.h"
+
+static const char *TAG = "WIFI_CFG";
 
 #define WIFI_CONFIG_STORE_PATH APP_LITTLEFS_BASE_PATH "/wifi_config.json"
 #define WIFI_CONFIG_TEMP_PATH  WIFI_CONFIG_STORE_PATH ".tmp"
@@ -196,4 +199,55 @@ bool wifi_config_store_is_path(const char *path)
 const char *wifi_config_store_get_path(void)
 {
     return WIFI_CONFIG_STORE_PATH;
+}
+
+esp_err_t wifi_config_store_apply_credentials(
+    const wifi_manager_credentials_t *credentials)
+{
+    if (!credentials_are_valid(credentials)) return ESP_ERR_INVALID_ARG;
+
+    esp_err_t err = app_storage_acquire();
+    if (err != ESP_OK) return err;
+
+    err = stage_unlocked(credentials);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "stage WiFi config failed: %s", esp_err_to_name(err));
+        (void)discard_unlocked();
+        app_storage_release();
+        return err;
+    }
+
+    wifi_manager_credentials_t previous;
+    wifi_manager_get_credentials(&previous);
+
+    err = wifi_manager_set_credentials(credentials);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "apply WiFi config failed: %s", esp_err_to_name(err));
+        (void)discard_unlocked();
+        app_storage_release();
+        return err;
+    }
+
+    err = commit_unlocked();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "commit WiFi config failed: %s", esp_err_to_name(err));
+        (void)discard_unlocked();
+        const esp_err_t rollback_err =
+            wifi_manager_set_credentials(&previous);
+        if (rollback_err != ESP_OK) {
+            ESP_LOGE(TAG, "rollback WiFi config failed: %s",
+                     esp_err_to_name(rollback_err));
+            const esp_err_t safe_mode_err =
+                wifi_manager_enter_provisioning_mode();
+            if (safe_mode_err != ESP_OK) {
+                ESP_LOGE(TAG, "force provisioning mode failed: %s",
+                         esp_err_to_name(safe_mode_err));
+            }
+        }
+        app_storage_release();
+        return err;
+    }
+
+    app_storage_release();
+    return ESP_OK;
 }

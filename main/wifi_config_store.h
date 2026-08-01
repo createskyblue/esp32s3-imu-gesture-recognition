@@ -12,6 +12,14 @@ esp_err_t wifi_config_store_load(wifi_manager_credentials_t *credentials);
 esp_err_t wifi_config_store_save(
     const wifi_manager_credentials_t *credentials);
 
+/**
+ * Apply new credentials as a single transaction: stage → snapshot previous →
+ * apply to the WiFi manager → commit, rolling back (or entering provisioning
+ * mode) on commit failure. Persists on success, reverts on failure.
+ */
+esp_err_t wifi_config_store_apply_credentials(
+    const wifi_manager_credentials_t *credentials);
+
 /** Write and fsync credentials to the protected temporary path. */
 esp_err_t wifi_config_store_stage(
     const wifi_manager_credentials_t *credentials);

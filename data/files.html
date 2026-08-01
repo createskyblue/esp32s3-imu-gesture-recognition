@@ -4,34 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>ESP32 文件管理</title>
+  <link rel="stylesheet" href="/common.css">
   <style>
-    :root{
-      --bg:#F5F7FA;--card:#FFFFFF;--line:#E8ECF1;
-      --text:#1F2937;--muted:#6B7280;--faint:#9CA3AF;
-      --primary:#0EA5E9;--primary-deep:#0284C7;--primary-bg:#E0F2FE;
-      --violet:#8B5CF6;--violet-bg:#EDE9FE;
-      --ok:#10B981;--ok-bg:#D1FAE5;
-      --warn:#F59E0B;--warn-bg:#FEF3C7;
-      --err:#EF4444;--err-bg:#FEE2E2;
-      --info:#3B82F6;--info-bg:#DBEAFE;
-      --radius-lg:20px;--radius-md:14px;--radius-sm:10px;
-      --shadow:0 10px 40px -10px rgba(15,23,42,.07);
-      --shadow-hover:0 18px 45px -12px rgba(15,23,42,.12);
-      --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,"Microsoft YaHei",sans-serif;
-    }
-    body{margin:0;min-height:100vh;padding:24px;font-family:var(--font);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;line-height:1.5}
     main{width:min(1180px,100%);margin:0 auto;display:grid;gap:18px}
-    h1{margin:0;font-size:26px;line-height:1.15;letter-spacing:-.3px}
-    button{font-family:inherit;font-size:14px;border:1px solid var(--line);background:#fff;color:var(--text);border-radius:999px;padding:10px 18px;font-weight:600;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.05);transition:transform .15s,box-shadow .15s,border-color .15s}
-    button:hover:not(:disabled){transform:translateY(-1px);box-shadow:var(--shadow-hover);border-color:#CBD5E1}
-    button:disabled{opacity:.5;cursor:not-allowed;transform:none}
-    button.primary{background:#0EA5E9;border:0;color:#fff;box-shadow:0 2px 8px -2px rgba(14,165,233,.4)}
-    button.primary:hover:not(:disabled){background:#0284C7;box-shadow:0 4px 12px -4px rgba(14,165,233,.5)}
     button.danger{background:#fff;border:1px solid #FECACA;color:#E11D48}
     button.danger:hover:not(:disabled){background:var(--err-bg);border-color:#FCA5A5}
-    .top{display:flex;gap:14px;align-items:center;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap}
-    .actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
-    .panel{background:var(--card);border-radius:var(--radius-lg);padding:22px;box-shadow:var(--shadow)}
+    .actions{justify-content:flex-end}
     .tabs{display:flex;gap:4px;margin:16px 0 18px;background:#F1F5F9;padding:5px;border-radius:999px;width:fit-content}
     .tab{border:0;background:transparent;color:var(--muted);border-radius:999px;padding:9px 20px;font-weight:600;cursor:pointer;font-size:14px;box-shadow:none}
     .tab:hover:not(:disabled){transform:none;box-shadow:none;background:#E2E8F0}

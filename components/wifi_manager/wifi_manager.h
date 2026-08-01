@@ -71,6 +71,17 @@ const char *wifi_manager_get_ap_ssid(void);
 /** SoftAP password exposed for status responses. */
 const char *wifi_manager_get_ap_password(void);
 
+/** Application callback invoked when SNTP time is first synchronized. */
+typedef void (*wifi_manager_time_synced_cb_t)(void *ctx);
+
+/**
+ * Register a callback invoked on SNTP time sync. May be called before or
+ * after wifi_manager_init(); useful for letting an external logger switch
+ * to timestamped filenames. Passing NULL clears the callback.
+ */
+esp_err_t wifi_manager_set_time_synced_callback(
+    wifi_manager_time_synced_cb_t callback, void *ctx);
+
 #ifdef __cplusplus
 }
 #endif

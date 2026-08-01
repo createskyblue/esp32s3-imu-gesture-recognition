@@ -4,42 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>ESP32-S3 模板</title>
+  <link rel="stylesheet" href="/common.css">
   <style>
-    :root{
-      --bg:#F5F7FA;--card:#FFFFFF;--line:#E8ECF1;
-      --text:#1F2937;--muted:#6B7280;--faint:#9CA3AF;
-      --primary:#0EA5E9;--primary-deep:#0284C7;--primary-bg:#E0F2FE;
-      --violet:#8B5CF6;--violet-bg:#EDE9FE;
-      --ok:#10B981;--ok-bg:#D1FAE5;
-      --warn:#F59E0B;--warn-bg:#FEF3C7;
-      --err:#EF4444;--err-bg:#FEE2E2;
-      --info:#3B82F6;--info-bg:#DBEAFE;
-      --radius-lg:20px;--radius-md:14px;--radius-sm:10px;
-      --shadow:0 10px 40px -10px rgba(15,23,42,.07);
-      --shadow-hover:0 18px 45px -12px rgba(15,23,42,.12);
-      --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,"Microsoft YaHei",sans-serif;
-    }
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{min-height:100vh;padding:24px;font-family:var(--font);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;line-height:1.5}
     main{width:min(1080px,100%);margin:0 auto;display:grid;gap:18px}
-    h1{margin:0;font-size:26px;line-height:1.15;letter-spacing:-.3px}
     h2{display:flex;align-items:center;gap:8px;margin:0 0 14px;font-size:16px;font-weight:600;color:var(--text)}
     .h2-meta{margin-left:auto;font-weight:400;font-size:12.5px;color:var(--faint)}
-    button,input,select{font-family:inherit;font-size:14px}
-    button{border:1px solid var(--line);background:#fff;color:var(--text);border-radius:999px;padding:10px 18px;font-weight:600;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.05);transition:transform .15s,box-shadow .15s,border-color .15s}
-    button:hover:not(:disabled){transform:translateY(-1px);box-shadow:var(--shadow-hover);border-color:#CBD5E1}
-    button:disabled{opacity:.5;cursor:not-allowed;transform:none}
-    button.primary{background:#0EA5E9;border:0;color:#fff;box-shadow:0 2px 8px -2px rgba(14,165,233,.4)}
-    button.primary:hover:not(:disabled){background:#0284C7;box-shadow:0 4px 12px -4px rgba(14,165,233,.5)}
     input{border:1px solid var(--line);background:#fff;color:var(--text);border-radius:12px;padding:10px 14px;width:100%;transition:border-color .15s,box-shadow .15s}
     input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(14,165,233,.14)}
     input::placeholder{color:var(--faint)}
     input[type=file]{padding:10px;font-size:13px;background:#F8FAFC}
     input[type=file]::file-selector-button{border:0;background:var(--primary-bg);color:var(--primary-deep);border-radius:8px;padding:6px 12px;font-weight:600;cursor:pointer;margin-right:10px}
-    .top{display:flex;gap:14px;align-items:center;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap}
     .subtitle{color:var(--muted);font-size:14px;margin-top:3px}
-    .actions{display:flex;gap:10px;flex-wrap:wrap}
-    .panel{background:var(--card);border-radius:var(--radius-lg);padding:22px;box-shadow:var(--shadow)}
     .network-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px}
     .card{background:linear-gradient(180deg,#fff,#F8FAFC);border:1px solid var(--line);border-radius:var(--radius-md);padding:16px;box-shadow:0 2px 6px rgba(15,23,42,.04)}
     .card-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}

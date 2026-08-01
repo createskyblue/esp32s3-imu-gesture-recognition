@@ -133,26 +133,40 @@ class ComponentBoundaryTests(unittest.TestCase):
         )
         self.assertNotIn("esp_vfs_littlefs_register", web_source)
 
-    def test_web_applies_then_atomically_persists_with_rollback(self):
-        source = (PROJECT_ROOT / "main" / "web_platform.c").read_text(
+    def test_wifi_config_transaction_lives_in_store(self):
+        web_source = (PROJECT_ROOT / "main" / "web_platform.c").read_text(
             encoding="utf-8"
         )
-        snapshot_call = "wifi_manager_get_credentials(&previous_wifi_credentials)"
-        stage_call = "wifi_config_store_stage(&wifi_credentials)"
-        apply_call = "wifi_manager_set_credentials(&wifi_credentials)"
-        commit_call = "wifi_config_store_commit()"
-        rollback_call = "wifi_manager_set_credentials(&previous_wifi_credentials)"
-        self.assertIn(snapshot_call, source)
-        self.assertIn(stage_call, source)
-        self.assertIn(apply_call, source)
-        self.assertIn(commit_call, source)
-        self.assertIn(rollback_call, source)
-        self.assertIn("wifi_config_store_discard()", source)
-        self.assertIn("wifi_manager_enter_provisioning_mode()", source)
-        self.assertLess(source.index(stage_call), source.index(snapshot_call))
-        self.assertLess(source.index(snapshot_call), source.index(apply_call))
-        self.assertLess(source.index(apply_call), source.index(commit_call))
-        self.assertLess(source.index("ota_manager_is_busy()"), source.index(stage_call))
+        store_source = (PROJECT_ROOT / "main" / "wifi_config_store.c").read_text(
+            encoding="utf-8"
+        )
+
+        # web_platform delegates the whole transaction to one composite API.
+        self.assertIn("wifi_config_store_apply_credentials(&wifi_credentials)", web_source)
+        self.assertNotIn("wifi_config_store_stage", web_source)
+        self.assertNotIn("wifi_config_store_commit", web_source)
+        self.assertNotIn("wifi_config_store_discard", web_source)
+
+        # The transaction (stage -> snapshot -> apply -> commit, with rollback)
+        # lives in the store.
+        apply_fn = store_source[
+            store_source.index("esp_err_t wifi_config_store_apply_credentials") :
+        ]
+        for token in [
+            "stage_unlocked(credentials)",
+            "wifi_manager_get_credentials(&previous)",
+            "wifi_manager_set_credentials(credentials)",
+            "commit_unlocked()",
+            "wifi_manager_set_credentials(&previous)",
+            "wifi_manager_enter_provisioning_mode()",
+        ]:
+            self.assertIn(token, apply_fn)
+        self.assertLess(apply_fn.index("stage_unlocked(credentials)"),
+                        apply_fn.index("wifi_manager_get_credentials(&previous)"))
+        self.assertLess(apply_fn.index("wifi_manager_get_credentials(&previous)"),
+                        apply_fn.index("wifi_manager_set_credentials(credentials)"))
+        self.assertLess(apply_fn.index("wifi_manager_set_credentials(credentials)"),
+                        apply_fn.index("commit_unlocked()"))
 
     def test_wifi_startup_policy_is_application_configured(self):
         header = (
@@ -270,6 +284,19 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertIn("updateOptionalStorageTabs", files_source)
         self.assertIn("tab.hidden=data.mounted!==true", files_source)
 
+    def test_frontend_pages_share_common_css(self):
+        common = (PROJECT_ROOT / "data" / "common.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(":root{", common)
+        self.assertIn(".panel{", common)
+        for page in ["index.html", "files.html"]:
+            html = (PROJECT_ROOT / "data" / page).read_text(encoding="utf-8")
+            self.assertIn('href="/common.css"', html)
+            # Shared design tokens must not be re-declared inline.
+            self.assertNotIn("--shadow-hover:0 18px", html)
+
     def test_default_build_does_not_register_hello_example(self):
         main_source = (PROJECT_ROOT / "main" / "main.c").read_text(
             encoding="utf-8"
@@ -298,6 +325,20 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertIn("memcpy(cfg.sta.ssid", source)
         self.assertIn("memcpy(cfg.sta.password", source)
         self.assertNotIn("copy_str((char *)cfg.sta", source)
+
+    def test_wifi_manager_exposes_time_synced_callback_hook(self):
+        header = (
+            PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.h"
+        ).read_text(encoding="utf-8")
+        source = (
+            PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.c"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("wifi_manager_time_synced_cb_t", header)
+        self.assertIn("wifi_manager_set_time_synced_callback", header)
+        self.assertIn("wifi_manager_set_time_synced_callback", source)
+        # The SNTP handler invokes the registered callback.
+        self.assertIn("s_time_synced_cb(", source)
 
     def test_wifi_store_replaces_config_atomically(self):
         source = (PROJECT_ROOT / "main" / "wifi_config_store.c").read_text(
