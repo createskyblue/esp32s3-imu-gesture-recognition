@@ -10,8 +10,8 @@
     main{width:min(960px,100%);margin:0 auto;display:grid;gap:14px}
     h1{margin:0 0 4px;font-size:28px;line-height:1.15}
     h2{margin:0 0 10px;font-size:17px;color:#374151}
-    button,input,select{border:1px solid #97acbf;border-radius:8px;padding:10px 12px;font-weight:700;cursor:pointer;font-size:14px}
-    button{background:#eaf4f2;color:#172033}
+    button,input,select{border:1px solid #97acbf;border-radius:8px;padding:10px 12px;cursor:pointer;font-size:14px}
+    button{background:#eaf4f2;color:#172033;font-weight:700}
     button:disabled{opacity:.5;cursor:not-allowed}
     button.primary{background:#0891b2;border-color:#0891b2;color:#fff}
     button.primary:hover:not(:disabled){background:#0e7490}
@@ -40,10 +40,14 @@
     .sys-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
     .sys-item{border:1px solid #d7e0ea;border-radius:8px;padding:12px;text-align:left;background:#fbfdff}
     .sys-item .label{font-size:12px;color:#5c6878;margin-bottom:2px}
-    .sys-item .value{font-size:16px;line-height:1.45;font-weight:800;word-break:break-word}
-    .usage-total{margin-top:4px;color:#475569;font-size:13px;font-weight:700}
-    .usage-detail{font-size:15px;line-height:1.5;font-weight:800;word-break:break-word}
-    .usage-separator{padding:0 4px;color:#94a3b8}
+    .usage-summary{font-size:15px;line-height:1.4;word-break:break-word;color:#172033}
+    .mem-row{display:flex;align-items:center;gap:8px;margin-top:6px}
+    .mem-bar{flex:1;height:6px;border-radius:999px;background:#e5e7eb;overflow:hidden}
+    .mem-bar span{display:block;height:100%;width:0;background:#16a34a;transition:width .3s ease}
+    .mem-bar.warn span{background:#f59e0b}
+    .mem-bar.danger span{background:#dc2626}
+    .mem-pct{min-width:40px;text-align:right;font-size:13px;color:#475569}
+    .mem-sub{margin-top:6px;font-size:12px;color:#5c6878}
     .task-label{margin-top:10px;padding:10px 12px 0;color:#475569;font-size:13px;font-weight:700}
     pre{white-space:pre-wrap;background:#0f172a;color:#d1fae5;border-radius:8px;padding:12px;overflow:visible;font-size:12px;max-height:none;margin-top:6px}
     .ota-form{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin-bottom:10px}
@@ -113,16 +117,21 @@
     <div class="sys-grid">
       <div class="sys-item">
         <div class="label">内部堆</div>
-        <div class="usage-total" id="internal-heap-total">总量 --</div>
-        <div class="usage-detail" id="internal-heap-detail"><span id="internal-heap-used">已用 --</span><span class="usage-separator">；</span><span id="internal-heap-free">剩余 --</span></div>
+        <div class="usage-summary" id="internal-heap-summary">已用 -- + 剩余 -- = 总量 --</div>
+        <div class="mem-row">
+          <div class="mem-bar" id="internal-heap-bar-wrap"><span id="internal-heap-bar"></span></div>
+          <span class="mem-pct" id="internal-heap-pct">--</span>
+        </div>
+        <div class="mem-sub">历史最低剩余 <span id="internal-min-heap">--</span> · 最大连续块 <span id="internal-largest-block">--</span></div>
       </div>
       <div class="sys-item">
         <div class="label">PSRAM</div>
-        <div class="usage-total" id="psram-total">总量 --</div>
-        <div class="usage-detail" id="psram-detail"><span id="psram-used">已用 --</span><span class="usage-separator">；</span><span id="psram-free">剩余 --</span></div>
+        <div class="usage-summary" id="psram-summary">已用 -- + 剩余 -- = 总量 --</div>
+        <div class="mem-row">
+          <div class="mem-bar" id="psram-bar-wrap"><span id="psram-bar"></span></div>
+          <span class="mem-pct" id="psram-pct">--</span>
+        </div>
       </div>
-      <div class="sys-item secondary"><div class="label">历史最低剩余</div><div class="value" id="min-heap">--</div></div>
-      <div class="sys-item secondary"><div class="label">最大连续块</div><div class="value" id="largest-block">--</div></div>
     </div>
     <div class="task-label">任务列表（栈剩余）</div>
     <pre id="task-list">任务列表加载中...</pre>
@@ -167,32 +176,32 @@ function formatPercent(ratio) {
   const digits = percent < 1 || percent > 99 ? 2 : 0;
   return percent.toFixed(digits).replace(/\.0+$/, '').replace(/(\.\d)0$/, '$1');
 }
-function formatUsage(used, total, free) {
+function renderUsage(prefix, used, total, free) {
   total = Number(total);
   used = Number(used);
   free = Number(free);
+  const summaryEl = document.getElementById(prefix + '-summary');
+  const barWrapEl = document.getElementById(prefix + '-bar-wrap');
+  const barEl = document.getElementById(prefix + '-bar');
+  const pctEl = document.getElementById(prefix + '-pct');
   if (!Number.isFinite(total) || total <= 0) {
-    return {total: '总量 N/A', used: '已用 N/A', free: '剩余 N/A'};
+    summaryEl.textContent = '已用 -- + 剩余 -- = 总量 --';
+    barEl.style.width = '0';
+    barWrapEl.classList.remove('warn', 'danger');
+    pctEl.textContent = '--';
+    return;
   }
   if (!Number.isFinite(used)) used = Math.max(0, total - free);
   if (!Number.isFinite(free)) free = Math.max(0, total - used);
   used = Math.max(0, Math.min(total, used));
   free = Math.max(0, Math.min(total, free));
-  const totalDigits = total >= 1048576 ? 2 : undefined;
-  const freeDigits = free >= 1048576 ? 3 : undefined;
-  return {
-    total: '总量 ' + formatBytes(total, totalDigits),
-    used: '已用 ' + formatBytes(used, used >= 1048576 ? 2 : undefined) +
-      '（' + formatPercent(used / total) + '%）',
-    free: '剩余 ' + formatBytes(free, freeDigits) +
-      '（' + formatPercent(free / total) + '%）'
-  };
-}
-function renderUsage(prefix, used, total, free) {
-  const usage = formatUsage(used, total, free);
-  document.getElementById(prefix + '-total').textContent = usage.total;
-  document.getElementById(prefix + '-used').textContent = usage.used;
-  document.getElementById(prefix + '-free').textContent = usage.free;
+  const ratio = used / total;
+  summaryEl.textContent =
+    '已用 ' + formatBytes(used) + ' + 剩余 ' + formatBytes(free) + ' = 总量 ' + formatBytes(total);
+  barEl.style.width = (ratio * 100) + '%';
+  barWrapEl.classList.toggle('warn', ratio >= 0.7 && ratio < 0.85);
+  barWrapEl.classList.toggle('danger', ratio >= 0.85);
+  pctEl.textContent = formatPercent(ratio) + '%';
 }
 function formatUptime(ms) {
   if (!ms) return '--';
@@ -231,8 +240,8 @@ async function refresh() {
     const r = await fetch('/debug.json');
     const d = await r.json();
     renderUsage('internal-heap', d.internal_used_heap, d.internal_total_heap, d.internal_free_heap);
-    document.getElementById('min-heap').textContent = formatBytes(d.internal_min_free_heap);
-    document.getElementById('largest-block').textContent = formatBytes(d.internal_largest_free_block);
+    document.getElementById('internal-min-heap').textContent = formatBytes(d.internal_min_free_heap);
+    document.getElementById('internal-largest-block').textContent = formatBytes(d.internal_largest_free_block);
     renderUsage('psram', d.psram_used_heap, d.psram_total_heap, d.psram_free_heap);
     document.getElementById('debug-uptime').textContent = '运行时间 ' + formatUptime(d.uptime_ms);
     document.getElementById('task-list').textContent = d.task_list || '(无任务信息)';
