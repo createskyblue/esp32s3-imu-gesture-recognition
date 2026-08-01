@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "json_http.h"
 #include "cJSON.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -65,17 +66,10 @@ static uint32_t               s_upload_write_offset;
 static bool                   s_upload_fs_active;
 
 /* ── helpers ───────────────────────────────────────────────────────────── */
-static void copy_str(char *dest, size_t dest_size, const char *src)
-{
-    if (dest == NULL || dest_size == 0u) return;
-    if (src == NULL) { dest[0] = '\0'; return; }
-    snprintf(dest, dest_size, "%s", src);
-}
-
 static void lock(void)   { if (s_mutex) xSemaphoreTake(s_mutex, portMAX_DELAY); }
 static void unlock(void) { if (s_mutex) xSemaphoreGive(s_mutex); }
 
-static void set_message(const char *msg) { copy_str(s_state.message, sizeof(s_state.message), msg); }
+static void set_message(const char *msg) { json_copy_str(s_state.message, sizeof(s_state.message), msg); }
 
 static bool filesystem_update_configured(void)
 {
@@ -113,7 +107,7 @@ static void ota_event_handler(const adf_event_t *event, void *ctx)
         break;
     case ESP_OTA_SERVICE_EVT_ITEM_BEGIN:
         s_state.item_index = e->item_index + 1u;
-        copy_str(s_state.current_label, sizeof(s_state.current_label),
+        json_copy_str(s_state.current_label, sizeof(s_state.current_label),
                  e->item_label ? e->item_label : "item");
         s_state.bytes_written = 0u;
         s_state.total_bytes = 0u;
@@ -197,8 +191,8 @@ static void ota_task(void *arg)
     char fs_url[OTA_URL_MAX_BYTES + 1u];
 
     lock();
-    copy_str(fw_url, sizeof(fw_url), s_state.firmware_url);
-    copy_str(fs_url, sizeof(fs_url), s_state.filesystem_url);
+    json_copy_str(fw_url, sizeof(fw_url), s_state.firmware_url);
+    json_copy_str(fs_url, sizeof(fs_url), s_state.filesystem_url);
     s_state.phase = OTA_UPDATE_RUNNING;
     s_state.progress = 1;
     s_state.last_error = ESP_OK;
@@ -319,8 +313,8 @@ void ota_manager_get_status(ota_status_t *out)
     if (out == NULL) return;
     lock();
     out->phase         = (ota_phase_t)s_state.phase;
-    copy_str(out->current_label, sizeof(out->current_label), s_state.current_label);
-    copy_str(out->message, sizeof(out->message), s_state.message);
+    json_copy_str(out->current_label, sizeof(out->current_label), s_state.current_label);
+    json_copy_str(out->message, sizeof(out->message), s_state.message);
     out->progress      = s_state.progress;
     out->item_index    = s_state.item_index;
     out->item_count    = s_state.item_count;
@@ -355,9 +349,9 @@ esp_err_t ota_manager_start_url(const char *firmware_url, const char *filesystem
                       (filesystem_url && filesystem_url[0] ? 1u : 0u),
         .last_error = ESP_OK,
     };
-    copy_str(s_state.firmware_url, sizeof(s_state.firmware_url),
+    json_copy_str(s_state.firmware_url, sizeof(s_state.firmware_url),
              firmware_url ? firmware_url : "");
-    copy_str(s_state.filesystem_url, sizeof(s_state.filesystem_url),
+    json_copy_str(s_state.filesystem_url, sizeof(s_state.filesystem_url),
              filesystem_url ? filesystem_url : "");
     set_message("queued");
     unlock();
@@ -386,7 +380,7 @@ esp_err_t ota_manager_upload_firmware_begin(void)
         .phase = OTA_UPDATE_RUNNING, .progress = 0,
         .item_count = 1, .last_error = ESP_OK,
     };
-    copy_str(s_state.current_label, sizeof(s_state.current_label), "firmware");
+    json_copy_str(s_state.current_label, sizeof(s_state.current_label), "firmware");
     set_message("uploading firmware");
     unlock();
 
@@ -476,7 +470,7 @@ esp_err_t ota_manager_upload_fs_begin(void)
         .phase = OTA_UPDATE_RUNNING, .progress = 0,
         .item_count = 1, .last_error = ESP_OK,
     };
-    copy_str(s_state.current_label, sizeof(s_state.current_label), "filesystem");
+    json_copy_str(s_state.current_label, sizeof(s_state.current_label), "filesystem");
     set_message("uploading filesystem");
     unlock();
 
@@ -600,52 +594,12 @@ void ota_manager_restart(void)
  * ══════════════════════════════════════════════════════════════════════════ */
 
 #define OTA_JSON_BUFFER_BYTES  768u
-#define OTA_UPLOAD_BUF_SIZE    4096u
-
-static esp_err_t receive_body(httpd_req_t *req, char *buffer, size_t buffer_size)
-{
-    if (buffer == NULL || buffer_size == 0u || req->content_len >= buffer_size) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "json body too large");
-        return ESP_FAIL;
-    }
-    size_t received = 0u;
-    while (received < req->content_len) {
-        const int ret = httpd_req_recv(req, buffer + received, req->content_len - received);
-        if (ret <= 0) {
-            if (ret == HTTPD_SOCK_ERR_TIMEOUT) continue;
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "failed to receive body");
-            return ESP_FAIL;
-        }
-        received += (size_t)ret;
-    }
-    buffer[received] = '\0';
-    return ESP_OK;
-}
-
-static esp_err_t json_response(httpd_req_t *req, cJSON *root)
-{
-    if (root == NULL) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "json allocation failed");
-        return ESP_FAIL;
-    }
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (json == NULL) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "json allocation failed");
-        return ESP_FAIL;
-    }
-    httpd_resp_set_type(req, "application/json; charset=utf-8");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store, max-age=0");
-    esp_err_t err = httpd_resp_sendstr(req, json);
-    cJSON_free(json);
-    return err;
-}
 
 /* ── POST /ota/start ─────────────────────────────────────────────────── */
 static esp_err_t ota_start_handler(httpd_req_t *req)
 {
     char body[OTA_JSON_BUFFER_BYTES];
-    if (receive_body(req, body, sizeof(body)) != ESP_OK) return ESP_FAIL;
+    if (json_receive_body(req, body, sizeof(body)) != ESP_OK) return ESP_FAIL;
 
     cJSON *root = cJSON_Parse(body);
     if (root == NULL) {
@@ -698,7 +652,7 @@ static esp_err_t ota_status_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "total_bytes", (double)st.total_bytes);
     cJSON_AddStringToObject(root, "last_error", esp_err_to_name(st.last_error));
     cJSON_AddBoolToObject(root, "reboot_required", st.reboot_required);
-    return json_response(req, root);
+    return json_send_object(req, root);
 }
 
 /* ── POST /ota/upload/firmware ───────────────────────────────────────── */

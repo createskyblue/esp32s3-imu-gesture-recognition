@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <sys/unistd.h>
 
+#include "json_http.h"
 #include "cJSON.h"
 #include "esp_err.h"
 #include "esp_http_server.h"
@@ -235,22 +236,9 @@ static int recv_retry_timeout(httpd_req_t *req, char *buffer, size_t length)
 static cJSON *receive_json_request(httpd_req_t *req)
 {
     char body[FILE_MGR_JSON_BUF];
-    if (req->content_len >= sizeof(body)) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "json body too large");
+    if (json_receive_body(req, body, sizeof(body)) != ESP_OK) {
         return NULL;
     }
-
-    size_t received = 0;
-    while (received < req->content_len) {
-        int chunk = recv_retry_timeout(req, body + received,
-                                       req->content_len - received);
-        if (chunk <= 0) {
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body receive failed");
-            return NULL;
-        }
-        received += (size_t)chunk;
-    }
-    body[received] = '\0';
 
     cJSON *root = cJSON_Parse(body);
     if (root == NULL) {
@@ -281,28 +269,6 @@ static esp_err_t get_fs_path(const cJSON *root,
         return ESP_ERR_INVALID_ARG;
     }
     return ESP_OK;
-}
-
-static esp_err_t send_json_response(httpd_req_t *req, cJSON *root)
-{
-    if (root == NULL) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "json allocation failed");
-        return ESP_FAIL;
-    }
-
-    char *text = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (text == NULL) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "json allocation failed");
-        return ESP_FAIL;
-    }
-
-    httpd_resp_set_type(req, "application/json; charset=utf-8");
-    esp_err_t err = httpd_resp_send(req, text, HTTPD_RESP_USE_STRLEN);
-    cJSON_free(text);
-    return err;
 }
 
 static const char *mutation_denied(const char *fs_type, const char *resolved)
@@ -824,7 +790,7 @@ static esp_err_t file_manager_delete_action(httpd_req_t *req,
     ESP_LOGI(TAG, "deleted: %s", resolved);
     cJSON *response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "deleted", true);
-    return send_json_response(req, response);
+    return json_send_object(req, response);
 }
 
 static esp_err_t file_manager_mkdir_action(httpd_req_t *req,
@@ -841,7 +807,7 @@ static esp_err_t file_manager_mkdir_action(httpd_req_t *req,
     if (strcmp(raw_path, "/") == 0) {
         cJSON *response = cJSON_CreateObject();
         cJSON_AddBoolToObject(response, "created", false);
-        return send_json_response(req, response);
+        return json_send_object(req, response);
     }
 
     char resolved[FILE_MGR_MAX_PATH];
@@ -865,7 +831,7 @@ static esp_err_t file_manager_mkdir_action(httpd_req_t *req,
         }
         cJSON *response = cJSON_CreateObject();
         cJSON_AddBoolToObject(response, "created", false);
-        return send_json_response(req, response);
+        return json_send_object(req, response);
     }
     if (mkdir(resolved, 0775) != 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "mkdir failed");
@@ -875,7 +841,7 @@ static esp_err_t file_manager_mkdir_action(httpd_req_t *req,
     ESP_LOGI(TAG, "directory created: %s", resolved);
     cJSON *response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "created", true);
-    return send_json_response(req, response);
+    return json_send_object(req, response);
 }
 
 static cJSON *receive_upload_metadata(httpd_req_t *req, size_t *bytes_used)
@@ -1032,7 +998,7 @@ static esp_err_t file_manager_upload_action(httpd_req_t *req)
     cJSON *response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "uploaded", true);
     cJSON_AddNumberToObject(response, "size", (double)payload_bytes);
-    return send_json_response(req, response);
+    return json_send_object(req, response);
 }
 
 /* ── unified API dispatcher ────────────────────────────────────────── */
