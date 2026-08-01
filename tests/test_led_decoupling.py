@@ -340,6 +340,19 @@ class ComponentBoundaryTests(unittest.TestCase):
         # The SNTP handler invokes the registered callback.
         self.assertIn("s_time_synced_cb(", source)
 
+    def test_wifi_manager_defers_sta_apply_for_response(self):
+        source = (
+            PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.c"
+        ).read_text(encoding="utf-8")
+
+        # Newly applied STA credentials are reconnected via a short one-shot
+        # timer so a caller (e.g. the HTTP handler) can flush its response
+        # before the STA drops.
+        self.assertIn("WIFI_STA_APPLY_DELAY_MS", source)
+        self.assertIn("esp_timer_start_once(s_apply_timer", source)
+        self.assertIn("apply_timer_cb", source)
+        self.assertIn("esp_timer_create(&apply_timer_args, &s_apply_timer)", source)
+
     def test_wifi_store_replaces_config_atomically(self):
         source = (PROJECT_ROOT / "main" / "wifi_config_store.c").read_text(
             encoding="utf-8"

@@ -20,6 +20,7 @@
 
 #define WIFI_STA_RECONNECT_INITIAL_DELAY_MS 5000u
 #define WIFI_STA_RECONNECT_MAX_DELAY_MS     60000u
+#define WIFI_STA_APPLY_DELAY_MS             150u
 #define DNS_PORT                            53
 #define DNS_MAX_QUERY_LEN                   512
 
@@ -39,6 +40,8 @@ static bool              s_sta_connected;
 static esp_ip4_addr_t    s_sta_ip;
 static esp_timer_handle_t s_reconnect_timer;
 static uint32_t           s_reconnect_delay_ms = WIFI_STA_RECONNECT_INITIAL_DELAY_MS;
+static esp_timer_handle_t s_apply_timer;
+static bool                s_sta_apply_pending;
 static SemaphoreHandle_t   s_credentials_mutex;
 static bool                s_started;
 static wifi_manager_time_synced_cb_t s_time_synced_cb;
@@ -226,6 +229,27 @@ static void schedule_reconnect(void)
     }
 }
 
+/* Apply newly configured STA credentials after a short delay. Deferring the
+ * disconnect+reconnect lets the caller (e.g. an HTTP handler) flush its
+ * response over the still-active connection before the STA drops. */
+static void apply_timer_cb(void *arg)
+{
+    (void)arg;
+    s_sta_apply_pending = false;
+    wifi_manager_credentials_t credentials;
+    current_credentials_get(&credentials);
+    if (s_sta_connected) return;
+    if (!has_credentials(&credentials)) {
+        ESP_LOGI(TAG, "STA SSID empty; SoftAP stays available for provisioning");
+        return;
+    }
+    ESP_LOGI(TAG, "Applying STA config, reconnecting to %s", credentials.sta_ssid);
+    (void)esp_wifi_disconnect();
+    esp_err_t err = esp_wifi_connect();
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "STA reconnect attempt failed: %s", esp_err_to_name(err));
+}
+
 static esp_err_t apply_sta_config(const wifi_manager_credentials_t *credentials)
 {
     wifi_config_t cfg = build_sta_config(credentials);
@@ -237,6 +261,20 @@ static esp_err_t apply_sta_config(const wifi_manager_credentials_t *credentials)
     s_sta_connected = false;
     s_sta_ip.addr = 0u;
     s_reconnect_delay_ms = WIFI_STA_RECONNECT_INITIAL_DELAY_MS;
+    stop_reconnect_timer();
+
+    if (s_apply_timer != NULL) {
+        if (esp_timer_is_active(s_apply_timer)) (void)esp_timer_stop(s_apply_timer);
+        s_sta_apply_pending = true;
+        err = esp_timer_start_once(s_apply_timer,
+                                   (uint64_t)WIFI_STA_APPLY_DELAY_MS * 1000ULL);
+        if (err == ESP_OK) return ESP_OK;
+        s_sta_apply_pending = false;
+        ESP_LOGE(TAG, "schedule STA apply failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    /* No timer yet (pre-init): fall back to an immediate reconnect. */
     (void)esp_wifi_disconnect();
     return connect_sta_now(credentials);
 }
@@ -432,6 +470,13 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
     };
     ESP_RETURN_ON_ERROR(esp_timer_create(&timer_args, &s_reconnect_timer), TAG,
                         "reconnect timer creation failed");
+
+    const esp_timer_create_args_t apply_timer_args = {
+        .callback = apply_timer_cb,
+        .name = "wifi_apply",
+    };
+    ESP_RETURN_ON_ERROR(esp_timer_create(&apply_timer_args, &s_apply_timer), TAG,
+                        "apply timer creation failed");
 
     esp_event_handler_instance_t inst_any, inst_got_ip;
     ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(
