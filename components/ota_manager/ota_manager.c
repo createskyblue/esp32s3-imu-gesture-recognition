@@ -607,8 +607,8 @@ static esp_err_t ota_start_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    char fw_url[257] = {0};
-    char fs_url[257] = {0};
+    char fw_url[OTA_URL_MAX_BYTES + 1u] = {0};
+    char fs_url[OTA_URL_MAX_BYTES + 1u] = {0};
     cJSON *fw = cJSON_GetObjectItemCaseSensitive(root, "firmware_url");
     cJSON *fs = cJSON_GetObjectItemCaseSensitive(root, "filesystem_url");
     if (cJSON_IsString(fw) && fw->valuestring) snprintf(fw_url, sizeof(fw_url), "%s", fw->valuestring);

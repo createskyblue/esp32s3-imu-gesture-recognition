@@ -55,6 +55,7 @@ void app_main(void)
         if (!wifi_manager_is_started()) {
             ESP_LOGE(TAG, "WiFi initialization failed: %s",
                      esp_err_to_name(wifi_err));
+            led_fatal_error();
             return;
         }
         ESP_LOGW(TAG, "WiFi initialization incomplete: %s; provisioning AP remains active",
