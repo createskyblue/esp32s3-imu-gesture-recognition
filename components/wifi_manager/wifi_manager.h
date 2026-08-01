@@ -68,6 +68,9 @@ esp_err_t wifi_manager_enter_provisioning_mode(void);
 /** SoftAP SSID exposed for status responses. */
 const char *wifi_manager_get_ap_ssid(void);
 
+/** SoftAP password exposed for status responses. */
+const char *wifi_manager_get_ap_password(void);
+
 #ifdef __cplusplus
 }
 #endif

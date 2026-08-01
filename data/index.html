@@ -193,9 +193,6 @@
 </main>
 
 <script>
-const AP_PASS = 'template1234';
-document.getElementById('ap-pass').textContent = AP_PASS;
-
 /* ── format helpers ────────────────────────────────────────────────── */
 function formatBytes(n, mbDigits) {
   n = Number(n);
@@ -265,6 +262,7 @@ async function refresh() {
     document.getElementById('sta-ssid').textContent = d.sta_ssid || '(未配置)';
     document.getElementById('sta-ip').textContent = ok ? d.sta_ip : '--';
     document.getElementById('ap-ssid').textContent = d.ap_ssid;
+    document.getElementById('ap-pass').textContent = d.ap_password || '--';
     document.getElementById('ap-ip').textContent = d.ap_ip;
     if (d.sta_ssid) document.getElementById('wifi-ssid').value = d.sta_ssid;
     document.getElementById('build-id').textContent = d.app_build_id;

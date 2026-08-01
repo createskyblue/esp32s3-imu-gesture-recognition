@@ -575,3 +575,8 @@ esp_err_t wifi_manager_enter_provisioning_mode(void)
 
 /* ── public: constants ─────────────────────────────────────────────────── */
 const char *wifi_manager_get_ap_ssid(void) { return s_startup_config.ap_ssid; }
+
+const char *wifi_manager_get_ap_password(void)
+{
+    return s_startup_config.ap_password;
+}

@@ -2,8 +2,11 @@
 #include "file_manager.h"
 #include "ota_manager.h"
 #include "app_storage.h"
+#include "app_config.h"
 #include "wifi_config_store.h"
 #include "wifi_manager.h"
+
+#include "json_http.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -79,48 +82,21 @@ static bool resolve_static_path(const char *uri, char *path, size_t path_size)
     return length >= 0 && (size_t)length < path_size;
 }
 
+/* Public helpers kept for custom handlers (see hello_web); delegate to the
+ * shared json_http helpers so behavior stays consistent across components. */
 esp_err_t send_json_text(httpd_req_t *req, const char *json)
 {
-    httpd_resp_set_type(req, "application/json; charset=utf-8");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store, max-age=0");
-    return httpd_resp_sendstr(req, json != NULL ? json : "{}");
+    return json_send_text(req, json);
 }
 
 esp_err_t send_json_object(httpd_req_t *req, cJSON *root)
 {
-    if (root == NULL) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "json allocation failed");
-        return ESP_FAIL;
-    }
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (json == NULL) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "json allocation failed");
-        return ESP_FAIL;
-    }
-    esp_err_t err = send_json_text(req, json);
-    cJSON_free(json);
-    return err;
+    return json_send_object(req, root);
 }
 
 esp_err_t receive_json_body(httpd_req_t *req, char *buffer, size_t buffer_size)
 {
-    if (buffer == NULL || buffer_size == 0u || req->content_len >= buffer_size) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "json body too large");
-        return ESP_FAIL;
-    }
-    size_t received = 0u;
-    while (received < req->content_len) {
-        const int ret = httpd_req_recv(req, buffer + received, req->content_len - received);
-        if (ret <= 0) {
-            if (ret == HTTPD_SOCK_ERR_TIMEOUT) continue;
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "failed to receive body");
-            return ESP_FAIL;
-        }
-        received += (size_t)ret;
-    }
-    buffer[received] = '\0';
-    return ESP_OK;
+    return json_receive_body(req, buffer, buffer_size);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -233,6 +209,7 @@ static esp_err_t network_json_handler(httpd_req_t *req)
     cJSON_AddStringToObject(root, "sta_ssid", snap.sta_ssid);
     cJSON_AddStringToObject(root, "sta_ip", snap.sta_connected ? snap.sta_ip : "0.0.0.0");
     cJSON_AddStringToObject(root, "ap_ssid", wifi_manager_get_ap_ssid());
+    cJSON_AddStringToObject(root, "ap_password", wifi_manager_get_ap_password());
     cJSON_AddStringToObject(root, "ap_ip", snap.ap_ip);
     cJSON_AddStringToObject(root, "config_path", wifi_config_store_get_path());
     cJSON_AddBoolToObject(root, "config_exists", wifi_config_store_exists());
@@ -240,7 +217,7 @@ static esp_err_t network_json_handler(httpd_req_t *req)
     const esp_app_desc_t *app_desc = esp_app_get_description();
     char build_ts[32];
     snprintf(build_ts, sizeof(build_ts), "%s %s", app_desc->date, app_desc->time);
-    cJSON_AddStringToObject(root, "app_build_id", "esp32s3-template-v1");
+    cJSON_AddStringToObject(root, "app_build_id", APP_BUILD_ID);
     cJSON_AddStringToObject(root, "firmware_sha256", esp_app_get_elf_sha256_str());
     cJSON_AddStringToObject(root, "build_timestamp", build_ts);
     cJSON_AddStringToObject(root, "idf_version", app_desc->idf_ver);
