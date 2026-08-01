@@ -1,10 +1,7 @@
 #include "sd_card.h"
 
-#include <dirent.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <sys/unistd.h>
 
 #include "driver/gpio.h"
 #include "driver/sdspi_host.h"
@@ -18,140 +15,75 @@
 
 static const char *TAG = "SD";
 
-#define SD_MOSI_GPIO GPIO_NUM_11
-#define SD_SCLK_GPIO GPIO_NUM_12
-#define SD_MISO_GPIO GPIO_NUM_13
-#define SD_CS_GPIO   GPIO_NUM_10
-#define SD_CD_GPIO   GPIO_NUM_14
-
-#define SD_MOUNT_POINT "/sdcard"
-
 static sdmmc_card_t *s_card = NULL;
 
-#define MAX_PENDING_DIRS 32
+/* ── template defaults ──────────────────────────────────────────────── */
+static const sd_card_config_t SD_CARD_DEFAULT_CONFIG = {
+    .mount_point = SD_CARD_DEFAULT_MOUNT_POINT,
+    .mosi_io = 11,
+    .sclk_io = 12,
+    .miso_io = 13,
+    .cs_io = 10,
+    .host_id = SPI2_HOST,
+    .max_freq_khz = 20000,          /* 20 MHz */
+    .max_open_files = 8,
+    .allocation_unit_size = 16 * 1024,
+};
 
-static void list_directory(const char *root_path)
+static esp_err_t config_copy(sd_card_config_t *dest,
+                             const sd_card_config_t *source)
 {
-    /* Iterative BFS traversal — no recursion, stack-safe */
-    static char pending[MAX_PENDING_DIRS][512];
-    int head = 0;  /* next to process */
-    int tail = 0;  /* next free slot */
+    *dest = SD_CARD_DEFAULT_CONFIG;
 
-    snprintf(pending[0], sizeof(pending[0]), "%s", root_path);
-    tail = 1;
+    if (source == NULL) return ESP_OK;
+    if (source->mount_point != NULL && source->mount_point[0] != '\0')
+        dest->mount_point = source->mount_point;
+    if (source->mosi_io > 0) dest->mosi_io = source->mosi_io;
+    if (source->sclk_io > 0) dest->sclk_io = source->sclk_io;
+    if (source->miso_io > 0) dest->miso_io = source->miso_io;
+    if (source->cs_io > 0)   dest->cs_io = source->cs_io;
+    if (source->host_id != 0) dest->host_id = source->host_id;
+    if (source->max_freq_khz > 0) dest->max_freq_khz = source->max_freq_khz;
+    if (source->max_open_files > 0) dest->max_open_files = source->max_open_files;
+    if (source->allocation_unit_size > 0)
+        dest->allocation_unit_size = source->allocation_unit_size;
 
-    while (head < tail) {
-        char dir_path[512];
-        snprintf(dir_path, sizeof(dir_path), "%s", pending[head]);
-        head++;
-
-        DIR *dir = opendir(dir_path);
-        if (dir == NULL) {
-            ESP_LOGE(TAG, "failed to open directory: %s", dir_path);
-            continue;
-        }
-
-        ESP_LOGI(TAG, "=== Directory: %s ===", dir_path);
-        int count = 0;
-        struct dirent *entry;
-
-        while ((entry = readdir(dir)) != NULL) {
-            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-                continue;
-            }
-
-            char full_path[512];
-            const int len = snprintf(full_path, sizeof(full_path),
-                                     "%s/%s", dir_path, entry->d_name);
-            if (len < 0 || (size_t)len >= sizeof(full_path)) {
-                ESP_LOGW(TAG, "  %-36s  (path too long)", entry->d_name);
-                count++;
-                continue;
-            }
-
-            struct stat st;
-            if (stat(full_path, &st) == 0) {
-                if (entry->d_type == DT_DIR) {
-                    ESP_LOGI(TAG, "  %-36s  [DIR]", entry->d_name);
-                    /* Enqueue subdirectory */
-                    if (tail < MAX_PENDING_DIRS) {
-                        snprintf(pending[tail], sizeof(pending[tail]), "%s", full_path);
-                        tail++;
-                    }
-                } else {
-                    ESP_LOGI(TAG, "  %-36s %8ld bytes", entry->d_name, (long)st.st_size);
-                }
-            } else {
-                ESP_LOGI(TAG, "  %-36s  (stat failed)", entry->d_name);
-            }
-            count++;
-        }
-        ESP_LOGI(TAG, "=== %d entries ===", count);
-        closedir(dir);
+    if (dest->mount_point == NULL || dest->mount_point[0] != '/') {
+        return ESP_ERR_INVALID_ARG;
     }
-
-    ESP_LOGI(TAG, "=== %d directories scanned ===", tail);
+    if (dest->mosi_io < 0 || dest->sclk_io < 0 || dest->miso_io < 0 ||
+        dest->cs_io < 0 || dest->max_freq_khz == 0u) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return ESP_OK;
 }
 
-static void read_write_test(void)
+esp_err_t sd_card_init_with_config(const sd_card_config_t *config)
 {
-    const char *test_path = SD_MOUNT_POINT "/test.txt";
-    const char *test_data = "ESP32-S3 SD card read/write test OK!";
-    const size_t test_len = strlen(test_data);
+    sd_card_config_t cfg;
+    esp_err_t err = config_copy(&cfg, config);
+    if (err != ESP_OK) return err;
 
-    /* write */
-    ESP_LOGI(TAG, "Writing to %s ...", test_path);
-    FILE *f = fopen(test_path, "w");
-    if (f == NULL) {
-        ESP_LOGE(TAG, "failed to open file for writing");
-        return;
-    }
-    fprintf(f, "%s", test_data);
-    fclose(f);
-    ESP_LOGI(TAG, "Wrote %u bytes", (unsigned)test_len);
-
-    /* read back */
-    ESP_LOGI(TAG, "Reading back from %s ...", test_path);
-    f = fopen(test_path, "r");
-    if (f == NULL) {
-        ESP_LOGE(TAG, "failed to open file for reading");
-        return;
-    }
-    char buf[128] = {0};
-    size_t nread = fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    ESP_LOGI(TAG, "Read %u bytes: \"%s\"", (unsigned)nread, buf);
-
-    /* verify */
-    if (nread == test_len && memcmp(buf, test_data, test_len) == 0) {
-        ESP_LOGI(TAG, "Read/write test PASSED");
-    } else {
-        ESP_LOGE(TAG, "Read/write test FAILED (mismatch)");
-    }
-}
-
-esp_err_t sd_card_init(void)
-{
     ESP_LOGI(TAG, "Initializing SD card (SPI mode)...");
-    ESP_LOGI(TAG, "  MOSI=IO%d, SCLK=IO%d, MISO=IO%d, CS=IO%d, CD=IO%d",
-             SD_MOSI_GPIO, SD_SCLK_GPIO, SD_MISO_GPIO, SD_CS_GPIO, SD_CD_GPIO);
+    ESP_LOGI(TAG, "  MOSI=IO%d, SCLK=IO%d, MISO=IO%d, CS=IO%d",
+             cfg.mosi_io, cfg.sclk_io, cfg.miso_io, cfg.cs_io);
 
     /* Enable internal pull-ups on SPI pins */
-    gpio_set_pull_mode(SD_MOSI_GPIO, GPIO_PULLUP_ONLY);
-    gpio_set_pull_mode(SD_MISO_GPIO, GPIO_PULLUP_ONLY);
-    gpio_set_pull_mode(SD_SCLK_GPIO, GPIO_PULLUP_ONLY);
-    gpio_set_pull_mode(SD_CS_GPIO, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(cfg.mosi_io, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(cfg.miso_io, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(cfg.sclk_io, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(cfg.cs_io, GPIO_PULLUP_ONLY);
 
     /* SPI bus init */
     spi_bus_config_t bus_cfg = {
-        .mosi_io_num = SD_MOSI_GPIO,
-        .miso_io_num = SD_MISO_GPIO,
-        .sclk_io_num = SD_SCLK_GPIO,
+        .mosi_io_num = cfg.mosi_io,
+        .miso_io_num = cfg.miso_io,
+        .sclk_io_num = cfg.sclk_io,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = 4096,
     };
-    esp_err_t err = spi_bus_initialize(SPI2_HOST, &bus_cfg, SDSPI_DEFAULT_DMA);
+    err = spi_bus_initialize(cfg.host_id, &bus_cfg, SDSPI_DEFAULT_DMA);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "SPI bus init failed: %s", esp_err_to_name(err));
         return err;
@@ -159,44 +91,44 @@ esp_err_t sd_card_init(void)
 
     /* SD SPI device config */
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = SPI2_HOST;
-    host.max_freq_khz = 20000;  /* 20MHz */
+    host.slot = cfg.host_id;
+    host.max_freq_khz = cfg.max_freq_khz;
 
     sdspi_device_config_t slot_cfg = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot_cfg.gpio_cs = SD_CS_GPIO;
-    slot_cfg.gpio_cd = -1;  /* 暂时不用 CD 引脚 */
-    slot_cfg.host_id = SPI2_HOST;
+    slot_cfg.gpio_cs = cfg.cs_io;
+    slot_cfg.gpio_cd = -1;      /* card-detect pin not used */
+    slot_cfg.host_id = cfg.host_id;
 
     /* Mount config */
     esp_vfs_fat_mount_config_t mount_cfg = {
-        .max_files = 8,
+        .max_files = cfg.max_open_files,
         .format_if_mount_failed = false,
-        .allocation_unit_size = 16 * 1024,
+        .allocation_unit_size = cfg.allocation_unit_size,
     };
 
     /* Wait for SD card to stabilize after power-on */
     vTaskDelay(pdMS_TO_TICKS(1000));
 
-    err = esp_vfs_fat_sdspi_mount(SD_MOUNT_POINT, &host, &slot_cfg, &mount_cfg, &s_card);
+    err = esp_vfs_fat_sdspi_mount(cfg.mount_point, &host, &slot_cfg,
+                                  &mount_cfg, &s_card);
     if (err != ESP_OK) {
         if (err == ESP_FAIL) {
             ESP_LOGE(TAG, "Failed to mount FAT filesystem. Is the SD card formatted as FAT?");
         } else {
             ESP_LOGE(TAG, "Failed to init SD card: %s", esp_err_to_name(err));
         }
-        spi_bus_free(SPI2_HOST);
+        spi_bus_free(cfg.host_id);
         return err;
     }
 
     /* Print card info */
     sdmmc_card_print_info(stdout, s_card);
 
-    /* List root directory recursively */
-    list_directory(SD_MOUNT_POINT);
-
-    /* Read/write test */
-    read_write_test();
-
-    ESP_LOGI(TAG, "SD card ready at %s", SD_MOUNT_POINT);
+    ESP_LOGI(TAG, "SD card ready at %s", cfg.mount_point);
     return ESP_OK;
+}
+
+esp_err_t sd_card_init(void)
+{
+    return sd_card_init_with_config(&SD_CARD_DEFAULT_CONFIG);
 }

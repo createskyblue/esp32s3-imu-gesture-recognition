@@ -20,9 +20,10 @@
 
 static const char *TAG = "SD_LOG";
 
-#define SD_MOUNT_POINT   "/sdcard"
-#define LOG_DIR          SD_MOUNT_POINT "/log"
 #define ROTATE_INTERVAL_MS 60000u
+
+/* Log directory supplied by the application (SD_LOGGER_DEFAULT_LOG_DIR). */
+static char s_log_dir[128];
 
 static FILE             *s_file;
 static int               s_seq;
@@ -38,7 +39,7 @@ static char              s_current_path[128];
 static int find_next_seq(void)
 {
     int max_seq = -1;
-    DIR *dir = opendir(LOG_DIR);
+    DIR *dir = opendir(s_log_dir);
     if (dir == NULL) {
         return 0;
     }
@@ -68,14 +69,14 @@ static void generate_path(char *buf, size_t buf_size, int seq)
             struct tm tm_info;
             localtime_r(&now, &tm_info);
             snprintf(buf, buf_size,
-                     LOG_DIR "/log_%08d_%04d%02d%02d_%02d%02d%02d_UTC8.log",
-                     seq,
+                     "%s/log_%08d_%04d%02d%02d_%02d%02d%02d_UTC8.log",
+                     s_log_dir, seq,
                      tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,
                      tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec);
             return;
         }
     }
-    snprintf(buf, buf_size, LOG_DIR "/log_%08d.log", seq);
+    snprintf(buf, buf_size, "%s/log_%08d.log", s_log_dir, seq);
 }
 
 /* ── close current file and open new one ──────────────────────────── */
@@ -169,16 +170,21 @@ static int sd_log_vprintf(const char *fmt, va_list args)
 }
 
 /* ── public API ─────────────────────────────────────────────────────── */
-esp_err_t sd_logger_init(void)
+esp_err_t sd_logger_init_with_config(const sd_logger_config_t *config)
 {
-    struct stat st;
-    if (stat(SD_MOUNT_POINT, &st) != 0) {
-        return ESP_ERR_INVALID_STATE;
+    const char *log_dir = (config != NULL && config->log_dir != NULL &&
+                           config->log_dir[0] != '\0')
+                              ? config->log_dir : SD_LOGGER_DEFAULT_LOG_DIR;
+    const int written = snprintf(s_log_dir, sizeof(s_log_dir), "%s", log_dir);
+    if (written < 0 || (size_t)written >= sizeof(s_log_dir) ||
+        s_log_dir[0] != '/') {
+        return ESP_ERR_INVALID_ARG;
     }
 
-    /* Create log directory */
-    if (stat(LOG_DIR, &st) != 0) {
-        if (mkdir(LOG_DIR, 0755) != 0) {
+    struct stat st;
+    /* Create log directory; fails cleanly when the SD mount point is absent */
+    if (stat(s_log_dir, &st) != 0) {
+        if (mkdir(s_log_dir, 0755) != 0) {
             return ESP_FAIL;
         }
     }
@@ -198,6 +204,11 @@ esp_err_t sd_logger_init(void)
     s_orig_vprintf = esp_log_set_vprintf(sd_log_vprintf);
 
     return ESP_OK;
+}
+
+esp_err_t sd_logger_init(void)
+{
+    return sd_logger_init_with_config(NULL);
 }
 
 void sd_logger_notify_time_synced(void)
