@@ -239,22 +239,22 @@ class ComponentBoundaryTests(unittest.TestCase):
         )
 
         for element_id in [
-            "internal-heap-total",
-            "internal-heap-detail",
-            "psram-total",
-            "psram-detail",
+            "internal-heap-summary",
+            "internal-heap-bar",
+            "internal-heap-pct",
+            "internal-min-heap",
+            "internal-largest-block",
+            "psram-summary",
+            "psram-pct",
         ]:
             self.assertRegex(source, rf'id="{element_id}"')
         self.assertIn("已用", source)
         self.assertIn("剩余", source)
-        self.assertIn("；", source)
-        self.assertIn("formatUsage", source)
+        self.assertIn("renderUsage", source)
         self.assertIn("formatPercent", source)
         self.assertIn('class="task-label"', source)
         self.assertIn('<pre id="task-list">', source)
         self.assertNotIn('class="task-details"', source)
-        self.assertIn("max-height:none", source)
-        self.assertIn("overflow:visible", source)
         self.assertIn("任务列表（栈剩余）", source)
 
     def test_default_file_manager_does_not_advertise_unconfigured_sd(self):
@@ -531,6 +531,29 @@ class ComponentBoundaryTests(unittest.TestCase):
         ignore = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
         self.assertNotIn("wifi_config.example.h", docs)
         self.assertNotIn("main/wifi_config.h", ignore)
+
+    def test_template_identity_has_single_source(self):
+        index = (PROJECT_ROOT / "data" / "index.html").read_text(
+            encoding="utf-8"
+        )
+        web_source = (PROJECT_ROOT / "main" / "web_platform.c").read_text(
+            encoding="utf-8"
+        )
+        app_config = (PROJECT_ROOT / "main" / "app_config.h").read_text(
+            encoding="utf-8"
+        )
+
+        # Frontend reads the AP password from /network.json instead of hardcoding it.
+        self.assertNotIn("const AP_PASS", index)
+        self.assertIn("d.ap_password", index)
+        # Platform exposes the AP password through the wifi_manager getter.
+        self.assertIn("wifi_manager_get_ap_password()", web_source)
+        self.assertIn("wifi_manager_get_ap_password", (
+            PROJECT_ROOT / "components" / "wifi_manager" / "wifi_manager.h"
+        ).read_text(encoding="utf-8"))
+        # Build id comes from the single app_config source.
+        self.assertIn("#define APP_BUILD_ID", app_config)
+        self.assertNotIn('"esp32s3-template-v1"', web_source)
 
 
 if __name__ == "__main__":
