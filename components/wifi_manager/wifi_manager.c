@@ -373,35 +373,34 @@ static void dns_server_task(void *arg)
     }
     ESP_LOGI(TAG, "DNS hijack server started on port %u", DNS_PORT);
 
-    uint8_t buf[DNS_MAX_QUERY_LEN];
+    /* single combined buffer: query received here, then answer appended in place.
+       Sized to hold the largest possible response without a second stack buffer. */
+    uint8_t buf[DNS_MAX_QUERY_LEN + sizeof(DNS_A_ANSWER_TEMPLATE)];
     while (1) {
         struct sockaddr_in from = {0};
         socklen_t fromlen = sizeof(from);
-        int len = recvfrom(sock, buf, sizeof(buf), 0, (struct sockaddr *)&from, &fromlen);
+        int len = recvfrom(sock, buf, DNS_MAX_QUERY_LEN, 0, (struct sockaddr *)&from, &fromlen);
         if (len < 12) continue;
 
-        uint8_t response[
-            DNS_MAX_QUERY_LEN + sizeof(DNS_A_ANSWER_TEMPLATE)];
-        memcpy(response, buf, (size_t)len);
-        response[2] |= 0x80; response[3] |= 0x80;
-        response[6] = 0x00; response[7] = 0x01;
+        buf[2] |= 0x80; buf[3] |= 0x80;
+        buf[6] = 0x00; buf[7] = 0x01;
 
         size_t answer_off = (size_t)len;
-        memcpy(response + answer_off, DNS_A_ANSWER_TEMPLATE,
+        memcpy(buf + answer_off, DNS_A_ANSWER_TEMPLATE,
                sizeof(DNS_A_ANSWER_TEMPLATE));
 
         esp_netif_ip_info_t ip_info;
         if (s_ap_netif && esp_netif_get_ip_info(s_ap_netif, &ip_info) == ESP_OK) {
             uint32_t ip = ip_info.ip.addr;
-            memcpy(response + answer_off + sizeof(DNS_A_ANSWER_TEMPLATE) - 4,
+            memcpy(buf + answer_off + sizeof(DNS_A_ANSWER_TEMPLATE) - 4,
                    &ip, 4);
         } else {
-            response[answer_off + sizeof(DNS_A_ANSWER_TEMPLATE) - 4] = 192;
-            response[answer_off + sizeof(DNS_A_ANSWER_TEMPLATE) - 3] = 168;
-            response[answer_off + sizeof(DNS_A_ANSWER_TEMPLATE) - 2] = 4;
-            response[answer_off + sizeof(DNS_A_ANSWER_TEMPLATE) - 1] = 1;
+            buf[answer_off + sizeof(DNS_A_ANSWER_TEMPLATE) - 4] = 192;
+            buf[answer_off + sizeof(DNS_A_ANSWER_TEMPLATE) - 3] = 168;
+            buf[answer_off + sizeof(DNS_A_ANSWER_TEMPLATE) - 2] = 4;
+            buf[answer_off + sizeof(DNS_A_ANSWER_TEMPLATE) - 1] = 1;
         }
-        sendto(sock, response,
+        sendto(sock, buf,
                answer_off + sizeof(DNS_A_ANSWER_TEMPLATE), 0,
                (struct sockaddr *)&from, fromlen);
     }
@@ -409,7 +408,7 @@ static void dns_server_task(void *arg)
 
 static esp_err_t dns_start(void)
 {
-    return xTaskCreate(dns_server_task, "dns_server", 3072, NULL, 5, NULL) == pdPASS
+    return xTaskCreate(dns_server_task, "dns_server", 5120, NULL, 5, NULL) == pdPASS
         ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
