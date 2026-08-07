@@ -7,17 +7,13 @@
 #include "json_http.h"
 #include "cJSON.h"
 #include "esp_err.h"
+#include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
-#include "esp_ota_service.h"
 #include "esp_partition.h"
-#include "esp_service.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "source/esp_ota_service_source_http.h"
-#include "target/esp_ota_service_target_app.h"
-#include "target/esp_ota_service_target_data.h"
 
 static const char *TAG = "OTA_MGR";
 
@@ -25,7 +21,9 @@ static const char *TAG = "OTA_MGR";
 #define OTA_TASK_STACK_BYTES 8192u
 #define OTA_TASK_PRIORITY    4u
 #define OTA_UPLOAD_BUF_SIZE  4096u
+#define OTA_DOWNLOAD_BUF_SIZE 4096u
 #define OTA_PARTITION_LABEL_MAX_BYTES 16u
+#define OTA_HTTP_TIMEOUT_MS  10000u
 
 /* ── internal state ────────────────────────────────────────────────────── */
 typedef enum {
@@ -90,97 +88,148 @@ static esp_err_t end_filesystem_update(void)
     return s_config.filesystem_update_end(s_config.context);
 }
 
-/* ── OTA service event handler ─────────────────────────────────────────── */
-static void ota_event_handler(const adf_event_t *event, void *ctx)
+static void update_progress(uint32_t item_index, uint32_t item_count,
+                            uint64_t bytes_written, uint64_t total_bytes)
 {
-    (void)ctx;
-    if (event == NULL || event->payload == NULL || event->payload_len < sizeof(esp_ota_service_event_t))
-        return;
-
-    const esp_ota_service_event_t *e = (const esp_ota_service_event_t *)event->payload;
     lock();
-    switch (e->id) {
-    case ESP_OTA_SERVICE_EVT_SESSION_BEGIN:
-        s_state.phase = OTA_UPDATE_RUNNING;
-        s_state.progress = 1;
-        set_message("OTA session started");
-        break;
-    case ESP_OTA_SERVICE_EVT_ITEM_BEGIN:
-        s_state.item_index = e->item_index + 1u;
-        json_copy_str(s_state.current_label, sizeof(s_state.current_label),
-                 e->item_label ? e->item_label : "item");
-        s_state.bytes_written = 0u;
-        s_state.total_bytes = 0u;
-        set_message("downloading");
-        break;
-    case ESP_OTA_SERVICE_EVT_ITEM_PROGRESS:
-        s_state.bytes_written = e->progress.bytes_written;
-        s_state.total_bytes = e->progress.total_bytes;
-        if (e->progress.total_bytes > 0u) {
-            uint32_t pct = (uint32_t)((e->progress.bytes_written * 100u) / e->progress.total_bytes);
-            s_state.progress = (int)(((s_state.item_index - 1u) * 100u + pct) / s_state.item_count);
-        }
-        set_message("writing flash");
-        break;
-    case ESP_OTA_SERVICE_EVT_ITEM_END:
-        s_state.last_error = e->error;
-        if (e->error != ESP_OK) {
-            s_state.phase = OTA_UPDATE_FAILED;
-            s_state.progress = 100;
-            set_message(esp_err_to_name(e->error));
-        }
-        break;
-    case ESP_OTA_SERVICE_EVT_SESSION_END:
-        if (e->session_end.aborted || e->session_end.failed_count > 0u) {
-            s_state.phase = OTA_UPDATE_FAILED;
-            set_message("OTA failed");
-        } else {
-            s_state.phase = OTA_UPDATE_DONE;
-            s_state.progress = 100;
-            s_state.reboot_required = (s_state.firmware_url[0] != '\0' || s_state.filesystem_url[0] != '\0');
-            set_message(s_state.reboot_required ? "done; reboot to apply" : "done");
-        }
-        break;
-    default:
-        break;
+    s_state.item_index = item_index;
+    s_state.bytes_written = bytes_written;
+    s_state.total_bytes = total_bytes;
+    if (total_bytes > 0u) {
+        const uint32_t pct = (uint32_t)((bytes_written * 100u) / total_bytes);
+        s_state.progress = (int)(((item_index - 1u) * 100u + pct) / item_count);
     }
     unlock();
 }
 
-/* ── OTA item preparation ──────────────────────────────────────────────── */
-static esp_err_t prepare_item(esp_ota_upgrade_item_t *item, const char *label,
-                               const char *uri, bool filesystem)
+/* ── native URL download + apply ───────────────────────────────────────── */
+
+/* Stream `url` through `writer` in chunks. `writer` returns ESP_OK to
+ * continue, or an error to abort. Reports progress through update_progress(). */
+static esp_err_t stream_url(const char *url, uint32_t item_index,
+                            uint32_t item_count,
+                            esp_err_t (*writer)(const uint8_t *, size_t, void *),
+                            void *writer_ctx)
 {
-    (void)label;
-    if (item == NULL || uri == NULL || uri[0] == '\0') return ESP_ERR_INVALID_ARG;
+    const esp_http_client_config_t cfg = {
+        .url = url,
+        .timeout_ms = OTA_HTTP_TIMEOUT_MS,
+        .buffer_size = OTA_DOWNLOAD_BUF_SIZE,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (client == NULL) return ESP_ERR_NO_MEM;
 
-    esp_ota_service_source_t *source = NULL;
-    esp_ota_service_target_t *target = NULL;
-    esp_err_t err = esp_ota_service_source_http_create(NULL, &source);
-    if (err != ESP_OK) return err;
-
-    if (filesystem) {
-        if (!filesystem_update_configured()) {
-            if (source->destroy) source->destroy(source);
-            return ESP_ERR_NOT_SUPPORTED;
-        }
-        err = esp_ota_service_target_data_create(NULL, &target);
-        item->partition_label = s_config.filesystem_partition_label;
-        item->resumable = false;
-    } else {
-        esp_ota_service_target_app_cfg_t app_cfg = { .bulk_flash_erase = true };
-        err = esp_ota_service_target_app_create(&app_cfg, &target);
-        item->resumable = true;
-    }
+    esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
-        if (source && source->destroy) source->destroy(source);
+        ESP_LOGE(TAG, "HTTP open failed for %s: %s", url, esp_err_to_name(err));
+        esp_http_client_cleanup(client);
         return err;
     }
-    item->uri = uri;
-    item->source = source;
-    item->target = target;
-    item->skip_on_fail = false;
+
+    const int content_length = esp_http_client_fetch_headers(client);
+    const uint64_t total_bytes = content_length > 0 ? (uint64_t)content_length : 0u;
+
+    uint8_t *buf = malloc(OTA_DOWNLOAD_BUF_SIZE);
+    if (buf == NULL) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_ERR_NO_MEM;
+    }
+
+    uint64_t written = 0u;
+    int len;
+    while ((len = esp_http_client_read(client, (char *)buf, OTA_DOWNLOAD_BUF_SIZE)) > 0) {
+        err = writer(buf, (size_t)len, writer_ctx);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "OTA write failed: %s", esp_err_to_name(err));
+            break;
+        }
+        written += (uint64_t)len;
+        update_progress(item_index, item_count, written, total_bytes);
+    }
+    free(buf);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (err == ESP_OK && len < 0) err = ESP_FAIL;
+    return err;
+}
+
+typedef struct {
+    esp_ota_handle_t handle;
+    const esp_partition_t *partition;
+} firmware_writer_ctx_t;
+
+static esp_err_t firmware_writer(const uint8_t *data, size_t len, void *ctx)
+{
+    firmware_writer_ctx_t *fw = (firmware_writer_ctx_t *)ctx;
+    return esp_ota_write(fw->handle, data, len);
+}
+
+static esp_err_t download_and_apply_firmware(const char *url)
+{
+    const esp_partition_t *partition = esp_ota_get_next_update_partition(NULL);
+    if (partition == NULL) return ESP_ERR_NOT_FOUND;
+
+    esp_ota_handle_t handle;
+    esp_err_t err = esp_ota_begin(partition, OTA_WITH_SEQUENTIAL_WRITES, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    firmware_writer_ctx_t ctx = { .handle = handle, .partition = partition };
+    err = stream_url(url, 1u, 1u, firmware_writer, &ctx);
+    if (err == ESP_OK) err = esp_ota_end(handle);
+    else (void)esp_ota_abort(handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "firmware OTA failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = esp_ota_set_boot_partition(partition);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set boot partition failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "firmware OTA complete");
     return ESP_OK;
+}
+
+typedef struct {
+    const esp_partition_t *partition;
+    uint32_t offset;
+} filesystem_writer_ctx_t;
+
+static esp_err_t filesystem_writer(const uint8_t *data, size_t len, void *ctx)
+{
+    filesystem_writer_ctx_t *fs = (filesystem_writer_ctx_t *)ctx;
+    if (fs->offset > fs->partition->size ||
+        len > (size_t)(fs->partition->size - fs->offset)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    esp_err_t err = esp_partition_write(fs->partition, fs->offset, data, len);
+    if (err == ESP_OK) fs->offset += (uint32_t)len;
+    return err;
+}
+
+static esp_err_t download_and_apply_filesystem(const char *url)
+{
+    if (!filesystem_update_configured()) return ESP_ERR_NOT_SUPPORTED;
+    const esp_partition_t *partition = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY,
+        s_config.filesystem_partition_label);
+    if (partition == NULL) return ESP_ERR_NOT_FOUND;
+
+    esp_err_t err = esp_partition_erase_range(partition, 0, partition->size);
+    if (err != ESP_OK) return err;
+
+    filesystem_writer_ctx_t ctx = { .partition = partition, .offset = 0 };
+    err = stream_url(url, 1u, 1u, filesystem_writer, &ctx);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "filesystem OTA failed: %s", esp_err_to_name(err));
+    }
+    return err;
 }
 
 /* ── background OTA task (URL-based) ───────────────────────────────────── */
@@ -207,59 +256,50 @@ static void ota_task(void *arg)
         filesystem_update_active = true;
     }
 
-    esp_ota_service_cfg_t cfg = ESP_OTA_SERVICE_CFG_DEFAULT();
-    cfg.worker_task.stack_size = OTA_TASK_STACK_BYTES;
-    cfg.worker_task.priority = OTA_TASK_PRIORITY;
-    esp_ota_service_t *service = NULL;
-    err = esp_ota_service_create(&cfg, &service);
-    if (err != ESP_OK) goto done;
-
-    esp_ota_upgrade_item_t items[2] = {0};
-    int item_count = 0;
+    uint32_t item_index = 0u;
     if (fw_url[0] != '\0') {
-        err = prepare_item(&items[item_count++], "firmware", fw_url, false);
-        if (err != ESP_OK) goto destroy;
+        lock();
+        s_state.item_index = item_index + 1u;
+        s_state.bytes_written = 0u;
+        s_state.total_bytes = 0u;
+        json_copy_str(s_state.current_label, sizeof(s_state.current_label), "firmware");
+        set_message("downloading firmware");
+        unlock();
+        err = download_and_apply_firmware(fw_url);
+        item_index++;
+        if (err != ESP_OK) goto done;
     }
-    if (fs_url[0] != '\0') {
-        err = prepare_item(&items[item_count++], "filesystem", fs_url, true);
-        if (err != ESP_OK) goto destroy;
-    }
-
-    lock(); s_state.item_count = (uint32_t)item_count; unlock();
-
-    adf_event_subscribe_info_t sub = ADF_EVENT_SUBSCRIBE_INFO_DEFAULT();
-    sub.handler = ota_event_handler;
-    err = esp_service_event_subscribe((esp_service_t *)service, &sub);
-    if (err != ESP_OK) goto destroy;
-
-    err = esp_ota_service_set_upgrade_list(service, items, item_count);
-    if (err == ESP_OK) err = esp_service_start((esp_service_t *)service);
-    if (err == ESP_OK) {
-        while (1) {
-            lock();
-            bool finished = (s_state.phase == OTA_UPDATE_DONE || s_state.phase == OTA_UPDATE_FAILED);
-            unlock();
-            if (finished) break;
-            vTaskDelay(pdMS_TO_TICKS(500));
-        }
+    if (fs_url[0] != '\0' && err == ESP_OK) {
+        lock();
+        s_state.item_index = item_index + 1u;
+        s_state.bytes_written = 0u;
+        s_state.total_bytes = 0u;
+        json_copy_str(s_state.current_label, sizeof(s_state.current_label), "filesystem");
+        set_message("downloading filesystem");
+        unlock();
+        err = download_and_apply_filesystem(fs_url);
+        item_index++;
     }
 
-destroy:
-    if (service != NULL) esp_ota_service_destroy(service);
 done:
     if (filesystem_update_active) {
         const esp_err_t storage_err = end_filesystem_update();
         if (err == ESP_OK && storage_err != ESP_OK) err = storage_err;
     }
+    lock();
     if (err != ESP_OK) {
-        lock();
         s_state.phase = OTA_UPDATE_FAILED;
         s_state.progress = 100;
         s_state.last_error = err;
         s_state.reboot_required = false;
         set_message(esp_err_to_name(err));
-        unlock();
+    } else {
+        s_state.phase = OTA_UPDATE_DONE;
+        s_state.progress = 100;
+        s_state.reboot_required = (fw_url[0] != '\0' || fs_url[0] != '\0');
+        set_message(s_state.reboot_required ? "done; reboot to apply" : "done");
     }
+    unlock();
     vTaskDelete(NULL);
 }
 

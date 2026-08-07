@@ -1,11 +1,4 @@
 dependencies:
-  espressif/adf_event_hub:
-    component_hash: d9591691f40213f78f7a573c41a703189da6c7cf69f09e30d81ce18510a3cdcc
-    dependencies: []
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 0.5.0~1
   espressif/cjson:
     component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
     dependencies:
@@ -16,68 +9,6 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.7.19~2
-  espressif/esp_codec_dev:
-    component_hash: 896c67360ae1f8dedaf8a53dfe48c015317fa455f061a5165307892296990028
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=4.0'
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 1.5.10
-  espressif/esp_ota_service:
-    component_hash: 516ab294923ea9453e94bf8442989e97f3e05bd7cb56527f4bec1a9bc719988f
-    dependencies:
-    - name: espressif/esp_service
-      registry_url: https://components.espressif.com
-      require: private
-      version: ^0.5
-    - name: espressif/gmf_io
-      registry_url: https://components.espressif.com
-      require: private
-      version: ^0.8
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 0.1.0~1
-  espressif/esp_service:
-    component_hash: 5f0ca26982ccab6c17bde0dbe8c8ea9a65c5fea7d90c7068767384d2bcbea015
-    dependencies:
-    - name: espressif/adf_event_hub
-      registry_url: https://components.espressif.com
-      require: private
-      version: ^0.5
-    - name: espressif/cjson
-      registry_url: https://components.espressif.com
-      require: private
-      version: ^1.7.19
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 0.5.2
-  espressif/gmf_core:
-    component_hash: 6e11017fc41cdb19a8035e334c9e9caced803d67547fb0e60f69cba5fd735f6a
-    dependencies: []
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 0.8.4
-  espressif/gmf_io:
-    component_hash: c6e9b6f560156dc110477214aab279c677e8746ca07a41d08da0452addac7f28
-    dependencies:
-    - name: espressif/esp_codec_dev
-      registry_url: https://components.espressif.com
-      require: private
-      version: ^1.4
-    - name: espressif/gmf_core
-      registry_url: https://components.espressif.com
-      require: private
-      version: ^0.8
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 0.8.1
   idf:
     source:
       type: idf
@@ -94,8 +25,7 @@ dependencies:
     version: 1.22.1
 direct_dependencies:
 - espressif/cjson
-- espressif/esp_ota_service
 - joltwallet/littlefs
-manifest_hash: 9b99b5c7bc83776e7c03e6b22ccf3293056cc717e09a84971c86562ce894e724
+manifest_hash: 787f0d3bd39d50756c2b2eaadce95b4af864fd1a7459d8acd9f9d181fde72b88
 target: esp32s3
 version: 3.0.0
