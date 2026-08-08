@@ -55,7 +55,7 @@
 | `/files` | 文件管理器 |
 | `/files.html` | 文件管理器（独立页面） |
 | `/network.json` | 网络状态 JSON（含 STA/AP 信息、`ap_password`、`app_build_id`） |
-| `/wifi_config.json` | WiFi 配置读写（GET/POST） |
+| `/wifi_config.json` | WiFi 配置读写（GET/POST，含 STA 静态 IP/DNS 设置） |
 | `/debug.json` | 系统调试信息 |
 | `/ota/status` | OTA 升级状态 |
 | `/ota/start` | 触发远程 OTA（POST JSON） |
@@ -141,6 +141,8 @@ idf.py -p COMx flash monitor
 ### WiFi 凭据边界
 
 默认启动流程先挂载 LittleFS，再由应用层把 `/littlefs/wifi_config.json` 读入 `wifi_manager_config_t.sta`，最后把完整启动配置传给 `wifi_manager_init()`。STA 凭据使用独立的 `wifi_manager_credentials_t`，网页运行时配网只能更新 STA，不会覆盖 AP、DNS 或 SNTP 策略。WiFi 组件本身不读取文件、不解析 JSON，也不支持 `wifi_config.h` 宏配置。
+
+`wifi_config.json` 除 `ssid` / `password` 外还支持 STA 的 IP 策略字段：`ip_mode`（`"dhcp"` 或 `"static"`，缺省 DHCP），静态模式下还需 `static_ip`、`netmask`、`gateway`、`dns` 四个 IPv4 地址。静态模式会停用 STA 的 DHCP 客户端并手动设定地址与 DNS；切回 DHCP 时恢复自动获取。AP 热点身份（`ap_ssid` / `ap_password`）也可持久化，缺省回退到 `main/main.c` 的编译期默认值；网页端可独立修改，改动约 3 秒后生效并会断开当前连到热点的客户端。
 
 AP 名称和密码、信道、最大客户端数、是否启用 captive-portal DNS 以及 SNTP 服务器均在 `main/main.c` 的启动配置中给出，应用可在初始化前直接调整，无需修改 `wifi_manager` 组件。
 

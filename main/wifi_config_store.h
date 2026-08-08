@@ -5,8 +5,18 @@
 
 #include <stdbool.h>
 
-/** Load credentials from the application LittleFS JSON file. */
+/** Application-persisted WiFi configuration: STA profile + AP identity. */
+typedef struct {
+    wifi_manager_credentials_t sta;
+    char ap_ssid[WIFI_MANAGER_SSID_MAX_BYTES + 1u];
+    char ap_password[WIFI_MANAGER_PASSWORD_MAX_BYTES + 1u];
+} wifi_persisted_config_t;
+
+/** Load the STA profile from the application LittleFS JSON file. */
 esp_err_t wifi_config_store_load(wifi_manager_credentials_t *credentials);
+
+/** Load the full persisted config (STA profile + AP identity). */
+esp_err_t wifi_config_store_load_full(wifi_persisted_config_t *config);
 
 /** Persist credentials to the application LittleFS JSON file. */
 esp_err_t wifi_config_store_save(
@@ -19,6 +29,12 @@ esp_err_t wifi_config_store_save(
  */
 esp_err_t wifi_config_store_apply_credentials(
     const wifi_manager_credentials_t *credentials);
+
+/**
+ * Apply the full config (STA + AP identity) as a single transaction:
+ * stage → apply STA → apply AP → commit, with rollback on failure.
+ */
+esp_err_t wifi_config_store_apply_full(wifi_persisted_config_t *config);
 
 /** Write and fsync credentials to the protected temporary path. */
 esp_err_t wifi_config_store_stage(

@@ -7,6 +7,8 @@
   <link rel="stylesheet" href="/common.css">
   <style>
     main{width:min(1080px,100%);margin:0 auto;display:grid;gap:18px}
+    button.danger{background:#fff;border:1px solid #FECACA;color:#E11D48}
+    button.danger:hover:not(:disabled){background:var(--err-bg);border-color:#FCA5A5}
     h2{display:flex;align-items:center;gap:8px;margin:0 0 14px;font-size:16px;font-weight:600;color:var(--text)}
     .h2-meta{margin-left:auto;font-weight:400;font-size:12.5px;color:var(--faint)}
     input{border:1px solid var(--line);background:#fff;color:var(--text);border-radius:12px;padding:10px 14px;width:100%;transition:border-color .15s,box-shadow .15s}
@@ -37,6 +39,18 @@
     .section-sub{display:flex;align-items:center;gap:8px;margin:2px 0 12px;font-size:14px;font-weight:600;color:var(--muted)}
     .wifi-form{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;margin-top:14px}
     .wifi-form label{display:grid;gap:6px;font-size:13px;color:var(--muted)}
+    .ip-form{margin-top:14px}
+    .ip-head{display:flex;align-items:flex-end;gap:12px;margin-bottom:12px;justify-content:space-between}
+    .ip-head label{display:grid;gap:6px;font-size:13px;color:var(--muted);flex:1}
+    .ip-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .ip-grid label{display:grid;gap:6px;font-size:13px;color:var(--muted)}
+    .ip-form select{border:1px solid var(--line);background:#fff;color:var(--text);border-radius:12px;padding:10px 14px;width:100%;cursor:pointer}
+    .ip-grid input:disabled{background:#F1F5F9;color:var(--faint)}
+    .modal-overlay{position:fixed;inset:0;background:rgba(15,23,42,.45);display:grid;place-items:center;z-index:50}
+    .modal-overlay[hidden]{display:none}
+    .modal{background:#fff;border-radius:var(--radius-lg);padding:22px;max-width:420px;width:calc(100% - 40px);box-shadow:var(--shadow);text-align:center}
+    .modal-title{font-size:16px;font-weight:700;color:var(--text);margin-bottom:10px}
+    .modal-body{font-size:14px;color:var(--muted);margin-bottom:18px;line-height:1.6;word-break:break-all}
     .wifi-message{margin-top:12px;min-height:20px;font-size:13px;color:var(--muted)}
     .wifi-message.success{color:var(--ok)}
     .wifi-message.error{color:var(--err)}
@@ -65,7 +79,7 @@
     .ota-progress span{display:block;height:100%;width:0;background:linear-gradient(90deg,#0EA5E9,#38BDF8);transition:width .3s ease}
     .ota-status{margin-top:8px;font-size:13px;color:var(--muted);min-height:18px}
     footer{margin-top:6px;text-align:center;color:var(--faint);font-size:12px}
-    @media(max-width:760px){body{padding:16px}.top{flex-direction:column;align-items:flex-start}.network-grid,.sys-grid,.wifi-form,.ota-form{grid-template-columns:1fr}}
+    @media(max-width:760px){body{padding:16px}.top{flex-direction:column;align-items:flex-start}.network-grid,.sys-grid,.wifi-form,.ota-form,.ip-grid{grid-template-columns:1fr}.ip-head{flex-direction:column;align-items:stretch}}
   </style>
 </head>
 <body>
@@ -78,6 +92,7 @@
     <div class="actions">
       <button onclick="location.href='/files'">📁 文件管理</button>
       <button onclick="location.reload()">🔄 刷新</button>
+      <button class="danger" onclick="rebootDevice()">⚠️ 重启</button>
     </div>
   </div>
 
@@ -110,14 +125,44 @@
       </div>
     </div>
 
-    <!-- WiFi Config Form -->
-    <h3 class="section-sub">🔧 WiFi 配网</h3>
+    <!-- 连接路由器 -->
+    <h3 class="section-sub">📶 连接路由器</h3>
     <form id="wifi-form" class="wifi-form" onsubmit="event.preventDefault();saveWiFi()">
       <label>SSID（WiFi 名称）<input type="text" id="wifi-ssid" placeholder="请输入 WiFi 名称" maxlength="32"></label>
-      <label>密码<input type="password" id="wifi-pass" placeholder="请输入 WiFi 密码" maxlength="63"></label>
-      <button class="primary" type="submit" style="height:fit-content">保存并连接</button>
+      <label>密码<input type="password" id="wifi-pass" placeholder="留空保留原密码" maxlength="63"></label>
+      <button class="primary" type="submit" style="height:fit-content">保存</button>
     </form>
     <div class="wifi-message" id="wifi-msg"></div>
+
+    <!-- 热点设置 -->
+    <h3 class="section-sub">📡 热点设置</h3>
+    <form id="ap-form" class="wifi-form" onsubmit="event.preventDefault();saveAp()">
+      <label>热点名称（SSID）<input type="text" id="ap-ssid" placeholder="ESP32S3-Template" maxlength="32"></label>
+      <label>热点密码<input type="password" id="ap-pass" placeholder="留空保留原密码（至少 8 位）" maxlength="63"></label>
+      <button class="primary" type="submit" style="height:fit-content">保存</button>
+    </form>
+    <div class="wifi-message" id="ap-msg"></div>
+
+    <!-- IP 模式设置 -->
+    <h3 class="section-sub">🌐 IP 模式设置</h3>
+    <div class="ip-form">
+      <div class="ip-head">
+        <label class="ip-mode-wrap">IP 模式
+          <select id="ip-mode" onchange="toggleIpMode()">
+            <option value="dhcp">DHCP（自动获取）</option>
+            <option value="static">静态 IP</option>
+          </select>
+        </label>
+        <button class="primary" type="button" onclick="saveIp()">保存</button>
+      </div>
+      <div class="ip-grid">
+        <label>IP 地址<input type="text" id="static-ip" placeholder="192.168.1.100" maxlength="15" disabled></label>
+        <label>子网掩码<input type="text" id="static-netmask" placeholder="255.255.255.0" maxlength="15" disabled></label>
+        <label>网关<input type="text" id="static-gateway" placeholder="192.168.1.1" maxlength="15" disabled></label>
+        <label>DNS 服务器<input type="text" id="static-dns" placeholder="223.5.5.5" maxlength="15" disabled></label>
+      </div>
+      <div class="wifi-message" id="ip-msg"></div>
+    </div>
   </div>
 
   <!-- System Info -->
@@ -166,6 +211,15 @@
 
   <footer>ESP32-S3 Template · Powered by ESP-IDF</footer>
 </main>
+
+<!-- Network-change notification modal -->
+<div id="net-modal" class="modal-overlay" hidden>
+  <div class="modal">
+    <div class="modal-title" id="net-modal-title"></div>
+    <div class="modal-body" id="net-modal-text"></div>
+    <button class="primary" type="button" onclick="closeNetModal()">确定</button>
+  </div>
+</div>
 
 <script>
 /* ── format helpers ────────────────────────────────────────────────── */
@@ -219,6 +273,18 @@ function formatUptime(ms) {
 }
 
 /* ── network + system refresh ──────────────────────────────────────── */
+/* A live 5s refresh must not clobber a value the user is currently editing. */
+const FORM_INPUT_IDS = ['wifi-ssid', 'wifi-pass', 'ip-mode', 'static-ip',
+                        'static-netmask', 'static-gateway', 'static-dns',
+                        'ap-ssid', 'ap-pass'];
+function formInputActive() {
+  const el = document.activeElement;
+  return el != null && FORM_INPUT_IDS.includes(el.id);
+}
+/* IP settings are only seeded from the server once, on first load, so a
+   refresh while the user is editing (or after they blurred) never reverts
+   their input before it is saved. */
+let ipFormSeeded = false;
 async function refresh() {
   try {
     const r = await fetch('/network.json');
@@ -239,10 +305,25 @@ async function refresh() {
     document.getElementById('ap-ssid').textContent = d.ap_ssid;
     document.getElementById('ap-pass').textContent = d.ap_password || '--';
     document.getElementById('ap-ip').textContent = d.ap_ip;
-    if (d.sta_ssid) document.getElementById('wifi-ssid').value = d.sta_ssid;
+    if (d.sta_ssid && !formInputActive()) document.getElementById('wifi-ssid').value = d.sta_ssid;
     document.getElementById('build-id').textContent = d.app_build_id;
     document.getElementById('build-ts').textContent = d.build_timestamp;
   } catch(e) { console.error('network', e); }
+
+  try {
+    const r = await fetch('/wifi_config.json');
+    const d = await r.json();
+    if (!ipFormSeeded && !formInputActive()) {
+      document.getElementById('ip-mode').value = d.ip_mode === 'static' ? 'static' : 'dhcp';
+      document.getElementById('static-ip').value = d.static_ip || '';
+      document.getElementById('static-netmask').value = d.netmask || '';
+      document.getElementById('static-gateway').value = d.gateway || '';
+      document.getElementById('static-dns').value = d.dns || '';
+      document.getElementById('ap-ssid').value = d.ap_ssid || '';
+      toggleIpMode();
+      ipFormSeeded = true;
+    }
+  } catch(e) { console.error('wifi config', e); }
 
   try {
     const r = await fetch('/debug.json');
@@ -265,11 +346,20 @@ async function refresh() {
 }
 
 /* ── WiFi save ─────────────────────────────────────────────────────── */
+const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+function toggleIpMode() {
+  const staticMode = document.getElementById('ip-mode').value === 'static';
+  ['static-ip', 'static-netmask', 'static-gateway', 'static-dns'].forEach(id => {
+    document.getElementById(id).disabled = !staticMode;
+  });
+}
+/* WiFi credentials are saved independently from the IP settings. */
 async function saveWiFi() {
   const ssid = document.getElementById('wifi-ssid').value.trim();
   const pass = document.getElementById('wifi-pass').value;
   const msg = document.getElementById('wifi-msg');
   if (!ssid) { msg.textContent = '请输入 WiFi 名称'; msg.className = 'wifi-message error'; return; }
+
   msg.textContent = '正在保存...'; msg.className = 'wifi-message';
   try {
     const r = await fetch('/wifi_config.json', {
@@ -277,6 +367,11 @@ async function saveWiFi() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ssid, password: pass})
     });
+    if (!r.ok) {
+      let detail = '保存失败（HTTP ' + r.status + '）';
+      try { const t = await r.text(); if (t) detail = t; } catch(e) {}
+      msg.textContent = detail; msg.className = 'wifi-message error'; return;
+    }
     const d = await r.json();
     if (d.ok) {
       msg.textContent = '✅ 已保存，正在连接 ' + ssid + '...';
@@ -287,6 +382,116 @@ async function saveWiFi() {
     }
   } catch(e) {
     msg.textContent = '网络错误: ' + e.message; msg.className = 'wifi-message error';
+  }
+}
+
+/* ── IP settings save (independent of WiFi credentials) ─────────────── */
+function showNetModal(title, text) {
+  document.getElementById('net-modal-title').textContent = title;
+  document.getElementById('net-modal-text').textContent = text;
+  document.getElementById('net-modal').hidden = false;
+}
+function closeNetModal() {
+  document.getElementById('net-modal').hidden = true;
+}
+async function saveIp() {
+  const ipMode = document.getElementById('ip-mode').value;
+  const msg = document.getElementById('ip-msg');
+  const body = {ip_mode: ipMode};
+  if (ipMode === 'static') {
+    const ip = document.getElementById('static-ip').value.trim();
+    const netmask = document.getElementById('static-netmask').value.trim();
+    const gateway = document.getElementById('static-gateway').value.trim();
+    const dns = document.getElementById('static-dns').value.trim();
+    if (![ip, netmask, gateway, dns].every(v => IPV4_RE.test(v))) {
+      msg.textContent = '静态 IP 模式下请填写有效的 IP 地址 / 掩码 / 网关 / DNS';
+      msg.className = 'wifi-message error'; return;
+    }
+    body.static_ip = ip;
+    body.netmask = netmask;
+    body.gateway = gateway;
+    body.dns = dns;
+  }
+
+  msg.textContent = '正在保存 IP 设置...'; msg.className = 'wifi-message';
+  try {
+    const r = await fetch('/wifi_config.json', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) {
+      let detail = '保存失败（HTTP ' + r.status + '）';
+      try { const t = await r.text(); if (t) detail = t; } catch(e) {}
+      msg.textContent = detail; msg.className = 'wifi-message error'; return;
+    }
+    const d = await r.json();
+    if (!d.ok) {
+      msg.textContent = '保存失败'; msg.className = 'wifi-message error'; return;
+    }
+    msg.textContent = ''; /* the modal takes over */
+    const newIp = d.new_ip || '';
+    if (newIp) {
+      /* Device switches address ~3s after this response; give it time to
+         reconnect, then follow it to the new address. */
+      showNetModal('IP 设置已保存',
+        '设备将在约 3 秒后切换 IP 到 ' + newIp + '，5 秒后自动跳转，请勿关闭页面。');
+      setTimeout(() => { location.href = 'http://' + newIp + '/'; }, 5000);
+    } else {
+      showNetModal('IP 设置已保存',
+        '设备正在切换为 DHCP 并重新获取 IP，当前地址可能失效。请稍后重新查找设备。');
+    }
+  } catch(e) {
+    msg.textContent = '网络错误: ' + e.message; msg.className = 'wifi-message error';
+  }
+}
+
+/* ── AP hotspot identity save (independent of STA/IP) ─────────────────── */
+async function saveAp() {
+  const ssid = document.getElementById('ap-ssid').value.trim();
+  const pass = document.getElementById('ap-pass').value;
+  const msg = document.getElementById('ap-msg');
+  if (!ssid) { msg.textContent = '请输入热点名称'; msg.className = 'wifi-message error'; return; }
+  const body = {ap_ssid: ssid};
+  if (pass) {
+    if (pass.length < 8) { msg.textContent = '热点密码至少需要 8 位'; msg.className = 'wifi-message error'; return; }
+    body.ap_password = pass;
+  }
+  msg.textContent = '正在保存 AP 设置...'; msg.className = 'wifi-message';
+  try {
+    const r = await fetch('/wifi_config.json', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) {
+      let detail = '保存失败（HTTP ' + r.status + '）';
+      try { const t = await r.text(); if (t) detail = t; } catch(e) {}
+      msg.textContent = detail; msg.className = 'wifi-message error'; return;
+    }
+    const d = await r.json();
+    if (!d.ok) { msg.textContent = '保存失败'; msg.className = 'wifi-message error'; return; }
+    msg.textContent = ''; /* the modal takes over */
+    document.getElementById('ap-pass').value = '';
+    showNetModal('AP 设置已保存',
+      '热点将于约 3 秒后切换为「' + ssid + '」。若你正在通过热点访问本页面，请用新密码重新连接。');
+  } catch(e) {
+    msg.textContent = '网络错误: ' + e.message; msg.className = 'wifi-message error';
+  }
+}
+
+/* ── device reboot ────────────────────────────────────────────────────── */
+async function rebootDevice() {
+  try {
+    const r = await fetch('/reboot', {method: 'POST'});
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    if (!d.ok) throw new Error('重启失败');
+    showNetModal('设备即将重启',
+      '设备将在 3 秒后重启，页面将自动刷新，请稍候...');
+    setTimeout(() => location.reload(), 8000);
+  } catch(e) {
+    alert('重启请求失败: ' + e.message);
   }
 }
 

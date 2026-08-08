@@ -20,7 +20,7 @@
 
 #define WIFI_STA_RECONNECT_INITIAL_DELAY_MS 5000u
 #define WIFI_STA_RECONNECT_MAX_DELAY_MS     60000u
-#define WIFI_STA_APPLY_DELAY_MS             150u
+#define WIFI_STA_APPLY_DELAY_MS             3000u
 #define DNS_PORT                            53
 #define DNS_MAX_QUERY_LEN                   512
 
@@ -46,6 +46,10 @@ static SemaphoreHandle_t   s_credentials_mutex;
 static bool                s_started;
 static wifi_manager_time_synced_cb_t s_time_synced_cb;
 static void               *s_time_synced_ctx;
+static esp_timer_handle_t  s_ap_apply_timer;
+static bool                s_ap_apply_pending;
+static char                s_pending_ap_ssid[WIFI_MANAGER_SSID_MAX_BYTES + 1u];
+static char                s_pending_ap_password[WIFI_MANAGER_PASSWORD_MAX_BYTES + 1u];
 
 /* ── tiny helpers ──────────────────────────────────────────────────────── */
 static void copy_str(char *dest, size_t dest_size, const char *src)
@@ -84,6 +88,18 @@ static void current_credentials_get(wifi_manager_credentials_t *out)
 }
 
 /* ── caller-provided credentials ───────────────────────────────────────── */
+bool wifi_manager_ipv4_is_valid(const char *str)
+{
+    if (str == NULL) return false;
+    unsigned int octets[4];
+    char extra = '\0';
+    const int n = sscanf(str, "%u.%u.%u.%u%c",
+                         &octets[0], &octets[1], &octets[2], &octets[3], &extra);
+    if (n != 4) return false;
+    return octets[0] <= 255u && octets[1] <= 255u &&
+           octets[2] <= 255u && octets[3] <= 255u;
+}
+
 static esp_err_t credentials_copy(wifi_manager_credentials_t *dest,
                                   const wifi_manager_credentials_t *source)
 {
@@ -95,11 +111,15 @@ static esp_err_t credentials_copy(wifi_manager_credentials_t *dest,
     const size_t password_len = strnlen(source->sta_password,
                                         sizeof(source->sta_password));
     if (ssid_len > WIFI_MANAGER_SSID_MAX_BYTES ||
-        password_len > WIFI_MANAGER_PASSWORD_MAX_BYTES) {
+        password_len > WIFI_MANAGER_PASSWORD_MAX_BYTES ||
+        (source->ip_static &&
+         !(wifi_manager_ipv4_is_valid(source->ip_addr) &&
+           wifi_manager_ipv4_is_valid(source->ip_netmask) &&
+           wifi_manager_ipv4_is_valid(source->ip_gateway) &&
+           wifi_manager_ipv4_is_valid(source->ip_dns)))) {
         return ESP_ERR_INVALID_ARG;
     }
-    memcpy(dest->sta_ssid, source->sta_ssid, ssid_len + 1u);
-    memcpy(dest->sta_password, source->sta_password, password_len + 1u);
+    *dest = *source;
     return ESP_OK;
 }
 
@@ -151,19 +171,26 @@ static wifi_config_t build_sta_config(const wifi_manager_credentials_t *c)
     return cfg;
 }
 
-static wifi_config_t build_ap_config(const wifi_manager_config_t *config)
+static wifi_config_t build_ap_config_fields(const char *ssid, const char *password,
+                                            uint8_t channel, uint8_t max_connections)
 {
     wifi_config_t cfg = {0};
-    const size_t ssid_len = strlen(config->ap_ssid);
-    const size_t password_len = strlen(config->ap_password);
-    memcpy(cfg.ap.ssid, config->ap_ssid, ssid_len);
-    memcpy(cfg.ap.password, config->ap_password, password_len);
+    const size_t ssid_len = strlen(ssid);
+    const size_t password_len = strlen(password);
+    memcpy(cfg.ap.ssid, ssid, ssid_len);
+    memcpy(cfg.ap.password, password, password_len);
     cfg.ap.ssid_len = ssid_len;
-    cfg.ap.channel = config->ap_channel;
-    cfg.ap.max_connection = config->ap_max_connections;
+    cfg.ap.channel = channel;
+    cfg.ap.max_connection = max_connections;
     cfg.ap.authmode = password_len == 0u
         ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_WPA2_PSK;
     return cfg;
+}
+
+static wifi_config_t build_ap_config(const wifi_manager_config_t *config)
+{
+    return build_ap_config_fields(config->ap_ssid, config->ap_password,
+                                  config->ap_channel, config->ap_max_connections);
 }
 
 /* ── STA connect / reconnect ───────────────────────────────────────────── */
@@ -229,25 +256,98 @@ static void schedule_reconnect(void)
     }
 }
 
-/* Apply newly configured STA credentials after a short delay. Deferring the
- * disconnect+reconnect lets the caller (e.g. an HTTP handler) flush its
- * response over the still-active connection before the STA drops. */
+static esp_err_t apply_sta_netif_config(const wifi_manager_credentials_t *credentials);
+
+/* Apply newly configured STA credentials after a delay. Deferring the IP
+ * policy change + disconnect/reconnect lets the caller (e.g. an HTTP handler)
+ * flush its response over the still-active connection before the STA drops;
+ * without this, changing the STA address would strand the HTTP reply. */
 static void apply_timer_cb(void *arg)
 {
     (void)arg;
     s_sta_apply_pending = false;
     wifi_manager_credentials_t credentials;
     current_credentials_get(&credentials);
-    if (s_sta_connected) return;
     if (!has_credentials(&credentials)) {
         ESP_LOGI(TAG, "STA SSID empty; SoftAP stays available for provisioning");
         return;
     }
     ESP_LOGI(TAG, "Applying STA config, reconnecting to %s", credentials.sta_ssid);
+    /* Apply the IP policy (static vs DHCP) now, after the caller's response
+     * has been flushed, so an IP change cannot strand the HTTP reply. */
+    (void)apply_sta_netif_config(&credentials);
     (void)esp_wifi_disconnect();
     esp_err_t err = esp_wifi_connect();
     if (err != ESP_OK)
         ESP_LOGW(TAG, "STA reconnect attempt failed: %s", esp_err_to_name(err));
+}
+
+/* Apply the STA IP policy (static vs DHCP) to the STA netif. Called from the
+ * deferred apply path so the caller's HTTP response is flushed before the
+ * address changes, and from the pre-init fallback before the first connect. */
+static esp_err_t apply_sta_netif_config(const wifi_manager_credentials_t *credentials)
+{
+    if (s_sta_netif == NULL) return ESP_ERR_INVALID_STATE;
+
+    if (credentials != NULL && credentials->ip_static) {
+        /* Static mode: stop the DHCP client, pin the address, set manual DNS.
+         * ALREADY_STOPPED is fine (netif not yet up on first application). */
+        esp_err_t err = esp_netif_dhcpc_stop(s_sta_netif);
+        if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+            ESP_LOGW(TAG, "STA DHCP stop failed: %s", esp_err_to_name(err));
+        }
+
+        esp_netif_ip_info_t info = {0};
+        info.ip.addr = esp_ip4addr_aton(credentials->ip_addr);
+        info.netmask.addr = esp_ip4addr_aton(credentials->ip_netmask);
+        info.gw.addr = esp_ip4addr_aton(credentials->ip_gateway);
+        err = esp_netif_set_ip_info(s_sta_netif, &info);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "set STA static IP failed: %s", esp_err_to_name(err));
+            return err;
+        }
+
+        esp_netif_dns_info_t dns = {0};
+        dns.ip.type = ESP_IPADDR_TYPE_V4;
+        dns.ip.u_addr.ip4.addr = esp_ip4addr_aton(credentials->ip_dns);
+        err = esp_netif_set_dns_info(s_sta_netif, ESP_NETIF_DNS_MAIN, &dns);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "set STA static DNS failed: %s", esp_err_to_name(err));
+        }
+        ESP_LOGI(TAG, "STA IP: static " IPSTR " gw " IPSTR " dns " IPSTR,
+                 IP2STR(&info.ip), IP2STR(&info.gw), IP2STR(&dns.ip.u_addr.ip4));
+        return ESP_OK;
+    }
+
+    /* DHCP mode: start the client, which also clears any static ip_info and
+     * manual DNS. ALREADY_STARTED is fine. */
+    esp_err_t err = esp_netif_dhcpc_start(s_sta_netif);
+    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
+        ESP_LOGW(TAG, "STA DHCP client start failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "STA IP: DHCP");
+    return ESP_OK;
+}
+
+/* Deferred SoftAP identity apply: reconfiguring the AP drops its clients, so
+ * it runs after the caller's HTTP response is flushed. */
+static void ap_apply_timer_cb(void *arg)
+{
+    (void)arg;
+    s_ap_apply_pending = false;
+    wifi_config_t ap_cfg = build_ap_config_fields(s_pending_ap_ssid,
+                                                  s_pending_ap_password,
+                                                  s_startup_config.ap_channel,
+                                                  s_startup_config.ap_max_connections);
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "apply SoftAP identity failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "SoftAP identity applied: SSID=%s auth=%s",
+                 s_pending_ap_ssid,
+                 s_pending_ap_password[0] != '\0' ? "WPA2-PSK" : "OPEN");
+    }
 }
 
 static esp_err_t apply_sta_config(const wifi_manager_credentials_t *credentials)
@@ -258,12 +358,15 @@ static esp_err_t apply_sta_config(const wifi_manager_credentials_t *credentials)
         ESP_LOGE(TAG, "set STA config failed: %s", esp_err_to_name(err));
         return err;
     }
+
     s_sta_connected = false;
     s_sta_ip.addr = 0u;
     s_reconnect_delay_ms = WIFI_STA_RECONNECT_INITIAL_DELAY_MS;
     stop_reconnect_timer();
 
     if (s_apply_timer != NULL) {
+        /* The IP policy + reconnect are deferred to apply_timer_cb so the
+         * caller's HTTP response is flushed before the STA address changes. */
         if (esp_timer_is_active(s_apply_timer)) (void)esp_timer_stop(s_apply_timer);
         s_sta_apply_pending = true;
         err = esp_timer_start_once(s_apply_timer,
@@ -274,7 +377,12 @@ static esp_err_t apply_sta_config(const wifi_manager_credentials_t *credentials)
         return err;
     }
 
-    /* No timer yet (pre-init): fall back to an immediate reconnect. */
+    /* No timer yet (pre-init): apply the IP policy and reconnect immediately. */
+    err = apply_sta_netif_config(credentials);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set STA IP policy failed: %s", esp_err_to_name(err));
+        return err;
+    }
     (void)esp_wifi_disconnect();
     return connect_sta_now(credentials);
 }
@@ -334,7 +442,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         s_reconnect_delay_ms = WIFI_STA_RECONNECT_INITIAL_DELAY_MS;
-        (void)connect_current_sta_now();
+        /* If an apply is pending, let apply_timer_cb drive the first connect
+         * so the STA IP policy (static/DHCP) is applied before associating. */
+        if (!s_sta_apply_pending) {
+            (void)connect_current_sta_now();
+        }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)event_data;
         s_sta_connected = false;
@@ -477,6 +589,13 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
     ESP_RETURN_ON_ERROR(esp_timer_create(&apply_timer_args, &s_apply_timer), TAG,
                         "apply timer creation failed");
 
+    const esp_timer_create_args_t ap_timer_args = {
+        .callback = ap_apply_timer_cb,
+        .name = "wifi_ap_apply",
+    };
+    ESP_RETURN_ON_ERROR(esp_timer_create(&ap_timer_args, &s_ap_apply_timer), TAG,
+                        "AP apply timer creation failed");
+
     esp_event_handler_instance_t inst_any, inst_got_ip;
     ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(
         WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &inst_any),
@@ -520,8 +639,10 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
         }
     }
 
-    ESP_LOGI(TAG, "WiFi APSTA init done, AP=%s STA=%s",
-             initial_config.ap_ssid, initial_config.sta.sta_ssid);
+    ESP_LOGI(TAG, "WiFi APSTA init done, AP=%s (auth=%s) STA=%s",
+             initial_config.ap_ssid,
+             initial_config.ap_password[0] != '\0' ? "WPA2-PSK" : "OPEN",
+             initial_config.sta.sta_ssid);
     return ESP_OK;
 }
 
@@ -628,6 +749,57 @@ const char *wifi_manager_get_ap_ssid(void) { return s_startup_config.ap_ssid; }
 const char *wifi_manager_get_ap_password(void)
 {
     return s_startup_config.ap_password;
+}
+
+esp_err_t wifi_manager_set_ap_config(const char *ap_ssid, const char *ap_password)
+{
+    if (ap_ssid == NULL) return ESP_ERR_INVALID_ARG;
+    const size_t ssid_len = strnlen(ap_ssid, WIFI_MANAGER_SSID_MAX_BYTES + 1u);
+    const size_t password_len = ap_password != NULL
+        ? strnlen(ap_password, WIFI_MANAGER_PASSWORD_MAX_BYTES + 1u) : 0u;
+    if (ssid_len == 0u || ssid_len > WIFI_MANAGER_SSID_MAX_BYTES ||
+        password_len > WIFI_MANAGER_PASSWORD_MAX_BYTES ||
+        (password_len > 0u && password_len < 8u)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_started) return ESP_ERR_INVALID_STATE;
+
+    /* Update the exposed identity immediately; the driver apply is deferred so
+     * a client connected to the SoftAP still receives the HTTP response before
+     * the AP reconfigures (and drops the association). */
+    copy_str(s_startup_config.ap_ssid, sizeof(s_startup_config.ap_ssid), ap_ssid);
+    copy_str(s_startup_config.ap_password, sizeof(s_startup_config.ap_password),
+             ap_password != NULL ? ap_password : "");
+    copy_str(s_pending_ap_ssid, sizeof(s_pending_ap_ssid),
+             s_startup_config.ap_ssid);
+    copy_str(s_pending_ap_password, sizeof(s_pending_ap_password),
+             s_startup_config.ap_password);
+
+    if (s_ap_apply_timer != NULL) {
+        if (esp_timer_is_active(s_ap_apply_timer)) (void)esp_timer_stop(s_ap_apply_timer);
+        s_ap_apply_pending = true;
+        esp_err_t err = esp_timer_start_once(s_ap_apply_timer,
+                                             (uint64_t)WIFI_STA_APPLY_DELAY_MS * 1000ULL);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "SoftAP identity scheduled: SSID=%s", ap_ssid);
+            return ESP_OK;
+        }
+        s_ap_apply_pending = false;
+        ESP_LOGE(TAG, "schedule SoftAP apply failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    /* No timer yet (pre-init): apply immediately. */
+    wifi_config_t ap_cfg = build_ap_config_fields(ap_ssid, ap_password,
+                                                  s_startup_config.ap_channel,
+                                                  s_startup_config.ap_max_connections);
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set SoftAP config failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "SoftAP identity updated: SSID=%s", ap_ssid);
+    return ESP_OK;
 }
 
 esp_err_t wifi_manager_set_time_synced_callback(

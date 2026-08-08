@@ -11,11 +11,19 @@ extern "C" {
 #define WIFI_MANAGER_SSID_MAX_BYTES     32u
 #define WIFI_MANAGER_PASSWORD_MAX_BYTES 64u
 #define WIFI_MANAGER_SNTP_SERVER_MAX_BYTES 63u
+#define WIFI_MANAGER_IP_MAX_BYTES       15u /* "255.255.255.255" */
 
-/** Caller-owned STA credentials used at startup and for runtime updates. */
+/** Caller-owned STA credentials + IP policy used at startup and on updates.
+ *  When ip_static is false the STA uses DHCP and the *_ip fields are ignored;
+ *  when true they must be valid IPv4 literals. */
 typedef struct {
     char sta_ssid[WIFI_MANAGER_SSID_MAX_BYTES + 1u];
     char sta_password[WIFI_MANAGER_PASSWORD_MAX_BYTES + 1u];
+    bool ip_static;
+    char ip_addr[WIFI_MANAGER_IP_MAX_BYTES + 1u];
+    char ip_netmask[WIFI_MANAGER_IP_MAX_BYTES + 1u];
+    char ip_gateway[WIFI_MANAGER_IP_MAX_BYTES + 1u];
+    char ip_dns[WIFI_MANAGER_IP_MAX_BYTES + 1u];
 } wifi_manager_credentials_t;
 
 /** Caller-owned WiFi startup policy copied by wifi_manager_init(). */
@@ -70,6 +78,16 @@ const char *wifi_manager_get_ap_ssid(void);
 
 /** SoftAP password exposed for status responses. */
 const char *wifi_manager_get_ap_password(void);
+
+/** True when str is a well-formed dotted-quad IPv4 address. */
+bool wifi_manager_ipv4_is_valid(const char *str);
+
+/**
+ * Reconfigure the SoftAP identity (SSID + password) at runtime; applied
+ * immediately. An empty password switches the AP to open. Exposed getters
+ * then reflect the new identity.
+ */
+esp_err_t wifi_manager_set_ap_config(const char *ap_ssid, const char *ap_password);
 
 /** Application callback invoked when SNTP time is first synchronized. */
 typedef void (*wifi_manager_time_synced_cb_t)(void *ctx);

@@ -50,6 +50,19 @@ void app_main(void)
         ESP_LOGW(TAG, "WiFi config load failed: %s; starting provisioning AP",
                  esp_err_to_name(config_err));
     }
+
+    /* AP identity (SSID/password) may also be persisted; use it when present,
+     * otherwise keep the compiled-in defaults above. */
+    if (config_err == ESP_OK) {
+        wifi_persisted_config_t full = {0};
+        if (wifi_config_store_load_full(&full) == ESP_OK &&
+            full.ap_ssid[0] != '\0') {
+            snprintf(wifi_config.ap_ssid, sizeof(wifi_config.ap_ssid),
+                     "%s", full.ap_ssid);
+            snprintf(wifi_config.ap_password, sizeof(wifi_config.ap_password),
+                     "%s", full.ap_password);
+        }
+    }
     esp_err_t wifi_err = wifi_manager_init(&wifi_config);
     if (wifi_err != ESP_OK) {
         if (!wifi_manager_is_started()) {

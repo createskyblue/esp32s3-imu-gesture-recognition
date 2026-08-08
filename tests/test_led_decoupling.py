@@ -142,7 +142,7 @@ class ComponentBoundaryTests(unittest.TestCase):
         )
 
         # web_platform delegates the whole transaction to one composite API.
-        self.assertIn("wifi_config_store_apply_credentials(&wifi_credentials)", web_source)
+        self.assertIn("wifi_config_store_apply_full(&config)", web_source)
         self.assertNotIn("wifi_config_store_stage", web_source)
         self.assertNotIn("wifi_config_store_commit", web_source)
         self.assertNotIn("wifi_config_store_discard", web_source)
@@ -150,22 +150,22 @@ class ComponentBoundaryTests(unittest.TestCase):
         # The transaction (stage -> snapshot -> apply -> commit, with rollback)
         # lives in the store.
         apply_fn = store_source[
-            store_source.index("esp_err_t wifi_config_store_apply_credentials") :
+            store_source.index("esp_err_t wifi_config_store_apply_full") :
         ]
         for token in [
-            "stage_unlocked(credentials)",
-            "wifi_manager_get_credentials(&previous)",
-            "wifi_manager_set_credentials(credentials)",
+            "stage_unlocked(config)",
+            "wifi_manager_get_credentials(&previous.sta)",
+            "wifi_manager_set_credentials(&config->sta)",
             "commit_unlocked()",
-            "wifi_manager_set_credentials(&previous)",
+            "wifi_manager_set_credentials(&previous.sta)",
             "wifi_manager_enter_provisioning_mode()",
         ]:
             self.assertIn(token, apply_fn)
-        self.assertLess(apply_fn.index("stage_unlocked(credentials)"),
-                        apply_fn.index("wifi_manager_get_credentials(&previous)"))
-        self.assertLess(apply_fn.index("wifi_manager_get_credentials(&previous)"),
-                        apply_fn.index("wifi_manager_set_credentials(credentials)"))
-        self.assertLess(apply_fn.index("wifi_manager_set_credentials(credentials)"),
+        self.assertLess(apply_fn.index("stage_unlocked(config)"),
+                        apply_fn.index("wifi_manager_get_credentials(&previous.sta)"))
+        self.assertLess(apply_fn.index("wifi_manager_get_credentials(&previous.sta)"),
+                        apply_fn.index("wifi_manager_set_credentials(&config->sta)"))
+        self.assertLess(apply_fn.index("wifi_manager_set_credentials(&config->sta)"),
                         apply_fn.index("commit_unlocked()"))
 
     def test_wifi_startup_policy_is_application_configured(self):
@@ -212,7 +212,7 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertIn("DNS_A_ANSWER_TEMPLATE", source)
         self.assertRegex(
             source,
-            r"uint8_t\s+response\s*\[\s*DNS_MAX_QUERY_LEN\s*\+\s*"
+            r"uint8_t\s+buf\s*\[\s*DNS_MAX_QUERY_LEN\s*\+\s*"
             r"sizeof\(DNS_A_ANSWER_TEMPLATE\)\s*\]",
         )
 
@@ -389,6 +389,13 @@ class ComponentBoundaryTests(unittest.TestCase):
             {
                 "ssid": "\x01" * 32,
                 "password": "\x01" * 64,
+                "ip_mode": "static",
+                "static_ip": "255.255.255.255",
+                "netmask": "255.255.255.255",
+                "gateway": "255.255.255.255",
+                "dns": "255.255.255.255",
+                "ap_ssid": "\x01" * 32,
+                "ap_password": "\x01" * 64,
             },
             separators=(",", ":"),
         )
@@ -579,7 +586,11 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertFalse(header_example.exists())
         self.assertTrue(json_example.exists())
         example = json.loads(json_example.read_text(encoding="utf-8"))
-        self.assertEqual({"ssid", "password"}, set(example))
+        self.assertEqual(
+            {"ssid", "password", "ip_mode", "static_ip", "netmask", "gateway", "dns",
+             "ap_ssid", "ap_password"},
+            set(example),
+        )
 
         docs = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
         ignore = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
