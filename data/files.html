@@ -16,7 +16,7 @@
     .tab.active{background:#fff;color:var(--text);box-shadow:0 2px 6px rgba(15,23,42,.08)}
     .capacity{margin-bottom:16px}
     .capacity-info{display:flex;gap:14px;align-items:center;flex-wrap:wrap;color:var(--muted);font-size:14px;margin-bottom:8px}
-    .capacity-info b{color:var(--text);font-weight:600}
+    .capacity-info #capSummary{color:var(--text);font-weight:500}
     .capacity-bar{height:10px;border-radius:999px;background:#E8ECF1;overflow:hidden}
     .capacity-bar span{display:block;height:100%;background:linear-gradient(90deg,#0EA5E9,#38BDF8);transition:width .2s ease}
     .capacity-bar span.warn{background:linear-gradient(90deg,#F59E0B,#FBBF24)}
@@ -72,9 +72,7 @@
       </div>
       <div class="capacity">
         <div class="capacity-info">
-          <span>容量: <b id="capTotal">--</b></span>
-          <span>可用: <b id="capFree">--</b></span>
-          <span>已用: <b id="capUsed">--</b></span>
+          <span id="capSummary">已用 -- + 剩余 -- = 总量 --</span>
         </div>
         <div class="capacity-bar"><span id="capBar" style="width:0"></span></div>
       </div>
@@ -192,9 +190,9 @@ async function requestJson(action,payload){
 function updateCapacityBar(total,free,mounted){
   const used=total-free;
   const pct=total>0?Math.round(used/total*100):0;
-  document.getElementById('capTotal').textContent=mounted?formatBytes(total):'--';
-  document.getElementById('capFree').textContent=mounted?formatBytes(free):'--';
-  document.getElementById('capUsed').textContent=mounted?formatBytes(used)+' ('+pct+'%)':'--';
+  document.getElementById('capSummary').textContent=mounted
+    ? '已用 '+formatBytes(used)+' + 剩余 '+formatBytes(free)+' = 总量 '+formatBytes(total)
+    : '已用 -- + 剩余 -- = 总量 --';
   const capBar=document.getElementById('capBar');
   capBar.style.width=mounted?pct+'%':'0';
   capBar.classList.toggle('warn',pct>=70&&pct<85);
