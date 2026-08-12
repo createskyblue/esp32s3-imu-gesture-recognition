@@ -2,14 +2,14 @@
 
 #include <string.h>
 
-#include "esp_bt_defs.h"
-#include "esp_gap_ble_api.h"
-#include "esp_gatt_defs.h"
-#include "esp_gattc_api.h"
 #include "esp_log.h"
+#include "host/ble_gatt.h"
+#include "host/ble_hs.h"
+#include "host/ble_uuid.h"
+#include "host/util/util.h"
+#include "services/gap/ble_svc_gap.h"
 
 #define BLE_HOST_TAG     "BLE_HOST"
-#define BLE_HOST_APP_ID  0x56u
 
 /* 睡眠垫 Nordic UART Service (NUS)：UUID 按 BLE 小端字节序
  * 6E400001-B5A3-F393-E0A9-E50E24DCCA9E → 9E CA DC 24 0E E5 A9 E0 93 F3 A3 B5 01 00 40 6E */
@@ -23,12 +23,12 @@ static const uint8_t NUS_TX_UUID128[16] = {
     0x93, 0xF3, 0xA3, 0xB5, 0x03, 0x00, 0x40, 0x6E,
 };
 
-static esp_gatt_if_t s_gattc_if;
-static uint16_t s_conn_id;
-static uint16_t s_svc_handle;
-static uint16_t s_tx_handle;
-static esp_bd_addr_t s_remote_bda;
-static esp_ble_addr_type_t s_remote_addr_type;
+static uint16_t s_conn_handle;
+static uint16_t s_svc_start;
+static uint16_t s_svc_end;
+static uint16_t s_tx_val_handle;
+static uint16_t s_cccd_handle;
+static bool s_connected;
 
 /* 在广播数据里找 128 位服务 UUID（AD type 0x06/0x07） */
 static bool adv_has_service_uuid(const uint8_t *adv, uint8_t adv_len,
@@ -50,7 +50,7 @@ static bool adv_has_service_uuid(const uint8_t *adv, uint8_t adv_len,
     return false;
 }
 
-/* 从广播数据里取设备名（AD type 0x08 完整名 / 0x09 短名） */
+/* 从广播数据取设备名（AD type 0x08 完整名 / 0x09 短名） */
 static void get_dev_name(const uint8_t *adv, uint8_t len, char *out, uint8_t out_size)
 {
     out[0] = '\0';
@@ -88,9 +88,8 @@ static int16_t sample_12bit(uint16_t v)
     return (v < 0x0800) ? (int16_t)v : (int16_t)(v - 0x1000);
 }
 
-/* 直接按 20 字节边界解析数据包（AGENTS.md 2.3~2.6），输出可读结果；
- * 原始字节放到 DEBUG 级，默认日志不刷屏。 */
-static void parse_packet(uint8_t *d, uint16_t len)
+/* 直接按 20 字节边界解析数据包（AGENTS.md 2.3~2.6），原始字节放 DEBUG 级 */
+static void parse_packet(const uint8_t *d, uint16_t len)
 {
     ESP_LOG_BUFFER_HEX_LEVEL(BLE_HOST_TAG, d, len, ESP_LOG_DEBUG);
     if (len < 20) {
@@ -129,140 +128,166 @@ static void parse_packet(uint8_t *d, uint16_t len)
     }
 }
 
-/* GAP 扫描结果 → 从 blufi 分发器转发进来 */
-void ble_host_test_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
+static void uuid128_from(const uint8_t bytes[16], ble_uuid128_t *out)
 {
-    switch (event) {
-    case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT:
-        esp_ble_gap_start_scanning(0);
-        ESP_LOGI(BLE_HOST_TAG, "scanning for sleep mat...");
-        break;
-    case ESP_GAP_BLE_SCAN_RESULT_EVT: {
-        if (param->scan_rst.search_evt != ESP_GAP_SEARCH_INQ_RES_EVT) break;
-        /* 名字可能在广播里，也可能在 scan response 里 */
-        char name[32];
-        get_dev_name(param->scan_rst.ble_adv, param->scan_rst.adv_data_len,
-                     name, sizeof(name));
-        if (name[0] == '\0') {
-            get_dev_name(param->scan_rst.ble_adv + param->scan_rst.adv_data_len,
-                         param->scan_rst.scan_rsp_len, name, sizeof(name));
-        }
-        const bool has_nus = adv_has_service_uuid(param->scan_rst.ble_adv,
-                                                  param->scan_rst.adv_data_len,
-                                                  NUS_SVC_UUID128);
-        const bool is_sp = (strncmp(name, "SP", 2) == 0);
-        ESP_LOGI(BLE_HOST_TAG, "scan: '%s' %02x:%02x:%02x:%02x:%02x:%02x nus=%d",
-                 name[0] ? name : "(no-name)",
-                 param->scan_rst.bda[0], param->scan_rst.bda[1], param->scan_rst.bda[2],
-                 param->scan_rst.bda[3], param->scan_rst.bda[4], param->scan_rst.bda[5], has_nus);
-        if (has_nus || is_sp) {
-            ESP_LOGI(BLE_HOST_TAG, "target found, connecting...");
-            esp_ble_gap_stop_scanning();
-            memcpy(s_remote_bda, param->scan_rst.bda, sizeof(s_remote_bda));
-            s_remote_addr_type = param->scan_rst.ble_addr_type;
-            esp_ble_gattc_open(s_gattc_if, s_remote_bda, s_remote_addr_type, true);
-        }
-        break;
-    }
-    default:
-        break;
-    }
+    out->u.type = BLE_UUID_TYPE_128;
+    memcpy(out->value, bytes, 16);
 }
 
-static void gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
-                     esp_ble_gattc_cb_param_t *param)
+static int write_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                    struct ble_gatt_attr *attr, void *arg)
 {
-    switch (event) {
-    case ESP_GATTC_REG_EVT:
-        if (param->reg.status != ESP_GATT_OK) {
-            ESP_LOGE(BLE_HOST_TAG, "GATTC register failed: %d", param->reg.status);
-            break;
+    (void)conn_handle; (void)error; (void)attr; (void)arg;
+    return 0;
+}
+
+static int chr_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                  const struct ble_gatt_chr *chr, void *arg);
+static int dsc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                  uint16_t chr_val_handle, const struct ble_gatt_dsc *dsc, void *arg);
+
+static int svc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                  const struct ble_gatt_svc *service, void *arg)
+{
+    (void)arg;
+    if (error->status != 0 && error->status != BLE_HS_EDONE) {
+        ESP_LOGE(BLE_HOST_TAG, "svc disc error: %d", error->status);
+        return 0;
+    }
+    if (service != NULL) {
+        /* 按 UUID 发现：记录 NUS 服务 handle 范围 */
+        s_svc_start = service->start_handle;
+        s_svc_end = service->end_handle;
+        return 0;
+    }
+    if (s_svc_start != 0) {
+        ESP_LOGI(BLE_HOST_TAG, "NUS svc found, discovering chars");
+        ble_gattc_disc_all_chrs(conn_handle, s_svc_start, s_svc_end, chr_cb, NULL);
+    } else {
+        ESP_LOGE(BLE_HOST_TAG, "NUS service not found");
+    }
+    return 0;
+}
+
+static int chr_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                  const struct ble_gatt_chr *chr, void *arg)
+{
+    (void)arg;
+    if (error->status != 0 && error->status != BLE_HS_EDONE) {
+        ESP_LOGE(BLE_HOST_TAG, "chr disc error: %d", error->status);
+        return 0;
+    }
+    if (chr != NULL) {
+        ble_uuid128_t tx_uuid;
+        uuid128_from(NUS_TX_UUID128, &tx_uuid);
+        if (ble_uuid_cmp(&chr->uuid.u, &tx_uuid.u) == 0) {
+            s_tx_val_handle = chr->val_handle;
         }
-        s_gattc_if = gattc_if;
-        {
-            esp_ble_scan_params_t scan_params = {
-                .scan_type = BLE_SCAN_TYPE_ACTIVE,
-                .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
-                .scan_filter_policy = BLE_SCAN_FILTER_ALLOW_ALL,
-                .scan_interval = 0x50,
-                .scan_window = 0x30,
-                .scan_duplicate = BLE_SCAN_DUPLICATE_DISABLE,
-            };
-            esp_ble_gap_set_scan_params(&scan_params);
+        return 0;
+    }
+    if (s_tx_val_handle != 0) {
+        ESP_LOGI(BLE_HOST_TAG, "TX char found (0x%04x), discovering CCCD", s_tx_val_handle);
+        ble_gattc_disc_all_dscs(conn_handle, s_tx_val_handle, s_svc_end, dsc_cb, NULL);
+    } else {
+        ESP_LOGE(BLE_HOST_TAG, "TX char not found");
+    }
+    return 0;
+}
+
+static int dsc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                  uint16_t chr_val_handle, const struct ble_gatt_dsc *dsc, void *arg)
+{
+    (void)chr_val_handle; (void)arg;
+    if (error->status != 0 && error->status != BLE_HS_EDONE) {
+        ESP_LOGE(BLE_HOST_TAG, "dsc disc error: %d", error->status);
+        return 0;
+    }
+    if (dsc != NULL) {
+        ble_uuid16_t cccd = BLE_UUID16_INIT(0x2902);
+        if (ble_uuid_cmp(&dsc->uuid.u, &cccd.u) == 0) {
+            s_cccd_handle = dsc->handle;
         }
-        break;
-    case ESP_GATTC_OPEN_EVT:
-        if (param->open.status != ESP_GATT_OK) {
-            ESP_LOGE(BLE_HOST_TAG, "open failed: %d", param->open.status);
-            break;
-        }
-        s_conn_id = param->open.conn_id;
-        ESP_LOGI(BLE_HOST_TAG, "connected, discovering services");
-        esp_ble_gattc_search_service(gattc_if, s_conn_id, NULL);
-        break;
-    case ESP_GATTC_SEARCH_RES_EVT:
-        ESP_LOGI(BLE_HOST_TAG, "  svc found: len=%d start=0x%04x end=0x%04x",
-                 param->search_res.srvc_id.uuid.len,
-                 param->search_res.start_handle, param->search_res.end_handle);
-        ESP_LOG_BUFFER_HEX(BLE_HOST_TAG, param->search_res.srvc_id.uuid.uuid.uuid128,
-                           param->search_res.srvc_id.uuid.len);
-        if (param->search_res.srvc_id.uuid.len == ESP_UUID_LEN_128 &&
-            memcmp(param->search_res.srvc_id.uuid.uuid.uuid128,
-                   NUS_SVC_UUID128, 16) == 0) {
-            s_svc_handle = param->search_res.start_handle;
-        }
-        break;
-    case ESP_GATTC_SEARCH_CMPL_EVT: {
-        if (s_svc_handle == 0) {
-            ESP_LOGE(BLE_HOST_TAG, "NUS service not found");
-            break;
-        }
-        esp_bt_uuid_t tx_uuid = { .len = ESP_UUID_LEN_128 };
-        memcpy(tx_uuid.uuid.uuid128, NUS_TX_UUID128, 16);
-        esp_gattc_char_elem_t chars[8];
-        uint16_t count = 8;
-        if (esp_ble_gattc_get_char_by_uuid(gattc_if, s_conn_id, s_svc_handle,
-                                           0xFFFF, tx_uuid, chars, &count) == ESP_GATT_OK &&
-            count > 0) {
-            s_tx_handle = chars[0].char_handle;
-            ESP_LOGI(BLE_HOST_TAG, "TX char found (0x%04x), subscribing notify", s_tx_handle);
-            esp_ble_gattc_register_for_notify(gattc_if, s_remote_bda, s_tx_handle);
-        } else {
-            ESP_LOGE(BLE_HOST_TAG, "TX char not found");
+        return 0;
+    }
+    if (s_cccd_handle != 0) {
+        uint8_t val[2] = {0x01, 0x00}; /* 使能通知 */
+        ble_gattc_write_flat(conn_handle, s_cccd_handle, val, sizeof(val), write_cb, NULL);
+        ESP_LOGI(BLE_HOST_TAG, "TX subscribed");
+    } else {
+        ESP_LOGE(BLE_HOST_TAG, "TX CCCD not found");
+    }
+    return 0;
+}
+
+/* GAP 事件：扫描 → 连接 → 收通知 */
+static int gap_event_handler(struct ble_gap_event *event, void *arg)
+{
+    (void)arg;
+    switch (event->type) {
+    case BLE_GAP_EVENT_DISC: {
+        const struct ble_gap_disc_desc *d = &event->disc;
+        char name[32];
+        get_dev_name(d->data, d->length_data, name, sizeof(name));
+        const bool has_nus = adv_has_service_uuid(d->data, d->length_data,
+                                                  NUS_SVC_UUID128);
+        const bool is_sp = (strncmp(name, "SP", 2) == 0);
+        ESP_LOGI(BLE_HOST_TAG, "scan evt=%u '%s' nus=%d",
+                 d->event_type, name[0] ? name : "(no-name)", has_nus);
+        if (has_nus || is_sp) {
+            ESP_LOGI(BLE_HOST_TAG, "target found, connecting...");
+            ble_gap_disc_cancel();
+            ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &d->addr, 30000, NULL,
+                            gap_event_handler, NULL);
         }
         break;
     }
-    case ESP_GATTC_REG_FOR_NOTIFY_EVT:
-        if (param->reg_for_notify.status == ESP_GATT_OK) {
-            esp_gattc_descr_elem_t descr;
-            uint16_t dcount = 1;
-            esp_bt_uuid_t cccd_uuid = { .len = ESP_UUID_LEN_16,
-                                        .uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG };
-            if (esp_ble_gattc_get_descr_by_char_handle(gattc_if, s_conn_id, s_tx_handle,
-                                                       cccd_uuid, &descr, &dcount) == ESP_GATT_OK &&
-                dcount > 0) {
-                uint8_t value[2] = {0x01, 0x00}; /* 使能通知 */
-                esp_ble_gattc_write_char_descr(gattc_if, s_conn_id, descr.handle,
-                                               sizeof(value), value,
-                                               ESP_GATT_WRITE_TYPE_RSP, ESP_GATT_AUTH_REQ_NONE);
-                ESP_LOGI(BLE_HOST_TAG, "notify subscribed");
-            }
-        } else {
-            ESP_LOGE(BLE_HOST_TAG, "register_for_notify failed: %d", param->reg_for_notify.status);
+    case BLE_GAP_EVENT_CONNECT:
+        if (event->connect.status != 0) {
+            ESP_LOGE(BLE_HOST_TAG, "connect failed: %d", event->connect.status);
+            break;
         }
+        s_conn_handle = event->connect.conn_handle;
+        s_connected = true;
+        ESP_LOGI(BLE_HOST_TAG, "connected, discovering NUS service");
+        ble_uuid128_t nus_uuid;
+        uuid128_from(NUS_SVC_UUID128, &nus_uuid);
+        ble_gattc_disc_svc_by_uuid(s_conn_handle, &nus_uuid.u, svc_cb, NULL);
         break;
-    case ESP_GATTC_NOTIFY_EVT:
-        parse_packet(param->notify.value, param->notify.value_len);
+    case BLE_GAP_EVENT_DISCONNECT:
+        s_connected = false;
+        ESP_LOGI(BLE_HOST_TAG, "disconnected");
+        break;
+    case BLE_GAP_EVENT_NOTIFY_RX:
+        if (event->notify_rx.om != NULL) {
+            uint16_t len = OS_MBUF_PKTLEN(event->notify_rx.om);
+            uint8_t buf[64];
+            if (len > sizeof(buf)) len = sizeof(buf);
+            os_mbuf_copydata(event->notify_rx.om, 0, len, buf);
+            parse_packet(buf, len);
+        }
         break;
     default:
         break;
     }
+    return 0;
 }
 
 esp_err_t ble_host_test_init(void)
 {
-    esp_ble_gattc_register_callback(gattc_cb);
-    esp_ble_gattc_app_register(BLE_HOST_APP_ID);
+    struct ble_gap_disc_params params = {
+        .filter_duplicates = 1,
+        .passive = 0,
+        .itvl = 0x50,
+        .window = 0x30,
+        .filter_policy = 0,
+        .limited = 0,
+    };
+    int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &params,
+                          gap_event_handler, NULL);
+    if (rc != 0) {
+        ESP_LOGE(BLE_HOST_TAG, "scan start failed: %d", rc);
+        return ESP_FAIL;
+    }
     ESP_LOGI(BLE_HOST_TAG, "init OK (BLE central, scanning for sleep mat NUS)");
     return ESP_OK;
 }

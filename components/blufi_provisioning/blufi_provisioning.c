@@ -7,14 +7,25 @@
 
 #include "esp_blufi.h"
 #include "esp_bt.h"
-#include "esp_bt_main.h"
 #include "esp_check.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 
+/* NimBLE host */
+#include "nimble/nimble_port.h"
+#include "nimble/nimble_port_freertos.h"
+#include "host/ble_hs.h"
+#include "host/ble_store.h"
+#include "services/gap/ble_svc_gap.h"
+#include "services/gatt/ble_svc_gatt.h"
+#include "store/config/ble_store_config.h"
+
 #define WIFI_CONNECTION_MAX_RETRY 5u
+
+/* NimBLE 配置存储初始化（头文件未导出，按官方示例声明） */
+void ble_store_config_init(void);
 
 static const char *TAG = "BLUFI_PROV";
 
@@ -158,23 +169,12 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
 }
 
 /* ── BluFi 事件 ────────────────────────────────────────────────────────── */
-/* 启动广播：若应用提供了自定义广播数据则用它的（设置后由 BluFi 的 GAP
- * handler 自动起广播），否则用 BluFi 默认广播。 */
-static void blufi_provisioning_start_adv(void)
-{
-    if (s_config.adv_data != NULL) {
-        esp_ble_gap_config_adv_data((esp_ble_adv_data_t *)s_config.adv_data);
-    } else {
-        esp_blufi_adv_start();
-    }
-}
-
 static void blufi_event_cb(esp_blufi_cb_event_t event, esp_blufi_cb_param_t *param)
 {
     switch (event) {
     case ESP_BLUFI_EVENT_INIT_FINISH:
         ESP_LOGI(TAG, "BluFi init finished, advertising as %s", s_config.device_name);
-        blufi_provisioning_start_adv();
+        esp_blufi_adv_start();
         break;
     case ESP_BLUFI_EVENT_DEINIT_FINISH:
         ESP_LOGI(TAG, "BluFi deinit finished");
@@ -191,7 +191,7 @@ static void blufi_event_cb(esp_blufi_cb_event_t event, esp_blufi_cb_param_t *par
         s_ble_connected = false;
         s_sta_is_connecting = false;
         blufi_security_deinit();
-        blufi_provisioning_start_adv();
+        esp_blufi_adv_start();
         break;
     case ESP_BLUFI_EVENT_SET_WIFI_OPMODE:
         /* 保持 APSTA：WiFi 模式由 wifi_manager 统一决定 */
@@ -313,16 +313,28 @@ static void blufi_event_cb(esp_blufi_cb_event_t event, esp_blufi_cb_param_t *par
     }
 }
 
-/* ── GAP 事件分发器 ───────────────────────────────────────────────────── */
-/* BLE 的 GAP 回调是全局单槽。这里注册一个分发器，先喂给官方 BluFi，再转发
- * 给应用提供的 gap_event_cb（扫描/连接等主机功能），两者共存互不顶替。 */
-static void blufi_gap_event_dispatcher(esp_gap_ble_cb_event_t event,
-                                       esp_ble_gap_cb_param_t *param)
+/* ── NimBLE host ───────────────────────────────────────────────────────── */
+static void blufi_on_reset(int reason)
 {
-    esp_blufi_gap_event_handler(event, param);
-    if (s_config.gap_event_cb != NULL) {
-        s_config.gap_event_cb(event, param);
+    ESP_LOGW(TAG, "NimBLE reset, reason=%d", reason);
+}
+
+static void blufi_on_sync(void)
+{
+    /* esp_nimble_enable 启动 host 时会重置 GAP 设备名，这里在广播前重新设置 */
+    if (s_config.device_name[0] != '\0') {
+        ble_svc_gap_device_name_set(s_config.device_name);
     }
+    ESP_LOGI(TAG, "NimBLE synced, GAP name='%s', init BluFi profile",
+             ble_svc_gap_device_name());
+    esp_blufi_profile_init();
+}
+
+static void blufi_host_task(void *param)
+{
+    (void)param;
+    nimble_port_run();
+    nimble_port_freertos_deinit();
 }
 
 /* ── public: init ──────────────────────────────────────────────────────── */
@@ -340,20 +352,7 @@ esp_err_t blufi_provisioning_init(const blufi_provisioning_config_t *config)
     ESP_RETURN_ON_ERROR(esp_bt_controller_enable(ESP_BT_MODE_BLE), TAG,
                         "BT controller enable failed");
 
-    /* 2. Bluedroid host + 设备名（SoftAP 名带 MAC 后缀，便于辨认） */
-    esp_bluedroid_config_t bd_cfg = BT_BLUEDROID_INIT_CONFIG_DEFAULT();
-    ESP_RETURN_ON_ERROR(esp_bluedroid_init_with_cfg(&bd_cfg), TAG,
-                        "Bluedroid init failed");
-    ESP_RETURN_ON_ERROR(esp_bluedroid_enable(), TAG,
-                        "Bluedroid enable failed");
-    if (s_config.device_name[0] != '\0') {
-        ESP_RETURN_ON_ERROR(esp_ble_gap_set_device_name(s_config.device_name),
-                            TAG, "set BLE device name failed");
-    }
-    ESP_LOGI(TAG, "BLE host ready, device name: %s",
-             s_config.device_name[0] != '\0' ? s_config.device_name : "(default)");
-
-    /* 3. BluFi profile + 回调 + GAP */
+    /* 2. BluFi 回调（profile init 在 NimBLE sync 后触发） */
     static esp_blufi_callbacks_t callbacks = {
         .event_cb = blufi_event_cb,
         .negotiate_data_handler = blufi_dh_negotiate_data_handler,
@@ -363,9 +362,28 @@ esp_err_t blufi_provisioning_init(const blufi_provisioning_config_t *config)
     };
     ESP_RETURN_ON_ERROR(esp_blufi_register_callbacks(&callbacks), TAG,
                         "BluFi callback registration failed");
-    ESP_RETURN_ON_ERROR(esp_ble_gap_register_callback(blufi_gap_event_dispatcher),
-                        TAG, "BLE GAP callback registration failed");
-    ESP_RETURN_ON_ERROR(esp_blufi_profile_init(), TAG, "BluFi profile init failed");
+
+    /* 3. NimBLE host + 设备名（SoftAP 名带 MAC 后缀，便于辨认） */
+    ESP_RETURN_ON_ERROR(esp_nimble_init(), TAG, "NimBLE init failed");
+    ble_hs_cfg.reset_cb = blufi_on_reset;
+    ble_hs_cfg.sync_cb = blufi_on_sync;
+    ble_hs_cfg.gatts_register_cb = esp_blufi_gatt_svr_register_cb;
+    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+    ble_hs_cfg.sm_io_cap = 4;   /* 无输入输出 → just-works 配对 */
+    ble_hs_cfg.sm_sc = 0;
+    ble_store_config_init();
+    (void)esp_blufi_gatt_svr_init();
+    esp_blufi_btc_init();
+
+    /* 应用在此注册额外的 GATT 服务（如 ble_echo），须在 sync 前完成 */
+    if (s_config.register_services_cb != NULL) {
+        s_config.register_services_cb();
+    }
+
+    ESP_RETURN_ON_ERROR(esp_nimble_enable(blufi_host_task), TAG,
+                        "NimBLE enable failed");
+    ESP_LOGI(TAG, "NimBLE host ready, device name: %s",
+             s_config.device_name[0] != '\0' ? s_config.device_name : "(default)");
 
     /* 4. WiFi/IP 事件：向手机上报连接状态 */
     ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,

@@ -2,12 +2,12 @@ menuconfig BLUFI_PROVISIONING_ENABLED
     bool "BluFi (BLE) WiFi provisioning"
     default y
     select BT_ENABLED
-    select BT_BLE_BLUFI_ENABLE
+    select BT_NIMBLE_BLUFI_ENABLE
     help
-        Enables the BluFi (BLE) provisioning component, usable from the EspBlufi
-        mobile app or the BlufiEsp32WeChat WeChat mini-program
+        Enables the BluFi (BLE) provisioning component (NimBLE host), usable
+        from the EspBlufi mobile app or the BlufiEsp32WeChat WeChat mini-program
         (https://github.com/xuhongv/BlufiEsp32WeChat).
 
-        Enabling this pulls in the Bluetooth (Bluedroid) stack, which reserves
-        about 60 KB of SRAM for the lifetime of the firmware while BLE is up.
+        Enabling this pulls in the NimBLE (BLE-only) stack, which reserves about
+        40 KB of SRAM for the lifetime of the firmware while BLE is up.
         Set it to "n" to strip BLE entirely and reclaim that memory.

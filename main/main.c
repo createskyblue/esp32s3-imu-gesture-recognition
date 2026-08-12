@@ -37,6 +37,29 @@ static void build_default_ap_ssid(char *buf, size_t buf_size)
              DEFAULT_AP_SSID_BASE, mac[3], mac[4], mac[5]);
 }
 
+/* BLE 广播名必须短：蓝牙广播包 31 字节上限，长名字+服务 UUID 会超 → 广播失败。
+ * WiFi AP 名可长（无此限制），这里用短版，仍按 MAC 唯一。 */
+static void build_ble_device_name(char *buf, size_t buf_size)
+{
+    uint8_t mac[6] = {0};
+    if (buf_size == 0u) return;
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
+        snprintf(buf, buf_size, "%s", "ESP32S3");
+        return;
+    }
+    snprintf(buf, buf_size, "ESP32S3-%02X%02X%02X", mac[3], mac[4], mac[5]);
+}
+
+#if CONFIG_BLUFI_PROVISIONING_ENABLED
+/* NimBLE host sync 前注册 echo 的 GATT 服务（由 blufi_provisioning_init 回调） */
+static void register_ble_services(void)
+{
+    if (ble_echo_init() != ESP_OK) {
+        ESP_LOGW(TAG, "BLE echo init failed");
+    }
+}
+#endif
+
 void app_main(void)
 {
     const esp_err_t storage_err = app_storage_init();
@@ -118,20 +141,14 @@ void app_main(void)
 #if CONFIG_BLUFI_PROVISIONING_ENABLED
     blufi_provisioning_config_t blufi_cfg = {
         .apply_credentials = wifi_config_store_apply_credentials,
-        .gap_event_cb = ble_host_test_gap_cb,  /* 扫描结果经由 GAP 分发器转给主机测试 */
+        .register_services_cb = register_ble_services,
     };
-    /* BLE 设备名与 SoftAP 名保持一致（含 MAC 后缀），便于辨认 */
-    snprintf(blufi_cfg.device_name, sizeof(blufi_cfg.device_name),
-             "%s", wifi_manager_get_ap_ssid());
+    /* BLE 广播名用短版（31 字节广播包限制），仍按 MAC 唯一 */
+    build_ble_device_name(blufi_cfg.device_name, sizeof(blufi_cfg.device_name));
     esp_err_t blufi_err = blufi_provisioning_init(&blufi_cfg);
     if (blufi_err != ESP_OK) {
         ESP_LOGW(TAG, "BluFi provisioning init failed: %s; BLE 配网不可用",
                  esp_err_to_name(blufi_err));
-    }
-
-    /* BLE echo 示例：演示在 BLE 上挂载自定义 GATT 服务（与 BluFi 配网并存） */
-    if (ble_echo_init() != ESP_OK) {
-        ESP_LOGW(TAG, "BLE echo init failed");
     }
 
     /* BLE 主机测试：扫描睡眠垫(NUS) → 连接 → 订阅 → 打印数据 */
