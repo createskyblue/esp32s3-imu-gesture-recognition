@@ -156,13 +156,13 @@ WiFi 配置更新采用“临时文件写入并同步 → 应用运行时配置 
 cp main/wifi_config.example.json data/wifi_config.json
 ```
 
-**BluFi (BLE) 配网**：固件内置 `blufi_provisioning` 组件，BLE 广播名与 SoftAP 名一致（含 MAC 后缀）。手机配网可选：
+**BluFi (BLE) 配网**：固件内置 `blufi_provisioning` 组件，BLE 广播名（短版 `ESP32S3-XXXXXX`，受 31 字节广播包限制）与 SoftAP 名（`ESP32S3-Template-XXXXXX`）都含 MAC 后缀、每板唯一。手机配网可选：
 - 微信小程序 **[BlufiEsp32WeChat](https://github.com/xuhongv/BlufiEsp32WeChat)**（免装 App）；
 - EspBlufi 原生 App（Android: EspBlufi / iOS: EspBlufiForiOS）。
 
 配网时下发 STA 凭据，经 `wifi_config_store_apply_credentials` 落地（应用 + 原子持久化 + 失败回滚），与 Web 配网共用同一套凭据与持久化路径。WiFi 模式保持 APSTA（由 `wifi_manager` 统一管理），BLE 常开以便随时（重新）配网。
 
-该功能是编译开关 **`CONFIG_BLUFI_PROVISIONING_ENABLED`**（默认在 `sdkconfig.defaults` 中为 `y`）。开启会引入整个蓝牙（Bluedroid）栈，**常驻约 60 KB SRAM**；若板子不需要配网，将其置 `n` 可把蓝牙栈整体剔除、回收这部分内存（同时 Bluetooth 相关 `CONFIG_BT_*` 选项失效）。
+BLE 由两个编译开关控制：**`CONFIG_BLE_ENABLED`**（BLE 总开关，NimBLE host，由 `ble_host` 组件统一拉起）+ **`CONFIG_BLUFI_PROVISIONING_ENABLED`**（配网功能，依赖 BLE）。两者默认都在 `sdkconfig.defaults` 中为 `y`。开启会引入 **NimBLE（BLE-only）栈，常驻约 40 KB SRAM**；若板子不需要 BLE，将两者置 `n` 可把蓝牙栈整体剔除、回收这部分内存。
 
 ### 可选启用 SD 卡
 

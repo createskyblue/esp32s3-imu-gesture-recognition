@@ -1,7 +1,9 @@
 #include "ble_echo.h"
+#include "ble_host.h"
 
 #include <string.h>
 
+#include "esp_check.h"
 #include "esp_log.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
@@ -68,10 +70,9 @@ static const struct ble_gatt_svc_def echo_svcs[] = {
     { 0 },
 };
 
-esp_err_t ble_echo_init(void)
+static esp_err_t echo_pre_enable(void)
 {
-    /* NimBLE 要求在 host sync 前把 GATT 服务表配好，因此需在
-     * blufi_provisioning_init（触发 NimBLE enable）之前调用。 */
+    /* NimBLE 要求 GATT 服务表在 host sync 前配好（ble_host enable 前执行） */
     int rc = ble_gatts_count_cfg(echo_svcs);
     if (rc != 0) {
         ESP_LOGE(BLE_ECHO_TAG, "count_cfg failed: %d", rc);
@@ -82,6 +83,13 @@ esp_err_t ble_echo_init(void)
         ESP_LOGE(BLE_ECHO_TAG, "add_svcs failed: %d", rc);
         return ESP_FAIL;
     }
+    return ESP_OK;
+}
+
+esp_err_t ble_echo_init(void)
+{
+    ESP_RETURN_ON_ERROR(ble_host_register_pre_enable(echo_pre_enable), BLE_ECHO_TAG,
+                        "ble_host pre-enable registration failed");
     ESP_LOGI(BLE_ECHO_TAG, "init OK (RX 0x%04x / TX 0x%04x)",
              BLE_ECHO_RX_UUID, BLE_ECHO_TX_UUID);
     return ESP_OK;

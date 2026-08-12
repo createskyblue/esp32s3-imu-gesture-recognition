@@ -12,7 +12,8 @@ extern "C" {
  * 固定 20 字节数据包(0x09 心率/呼吸/睡眠、0x10 采样、0x50 启动)。
  *
  * NimBLE 下每个 GAP 操作自带事件回调，不与 BluFi 配网/echo 冲突。
- * 需在 BLE 初始化之后调用（当前由 blufi_provisioning_init 拉起）。
+ * 需在 ble_host_init() 之前调用（注册 on_sync 钩子，host sync 后自动开始扫描，
+ * 由 ble_host 统一拉起 host）。
  */
 esp_err_t ble_host_test_init(void);
 

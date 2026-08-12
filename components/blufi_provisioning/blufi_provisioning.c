@@ -1,31 +1,22 @@
 #include "blufi_provisioning.h"
 #include "blufi_security.h"
+#include "ble_host.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "esp_blufi.h"
-#include "esp_bt.h"
 #include "esp_check.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 
-/* NimBLE host */
-#include "nimble/nimble_port.h"
-#include "nimble/nimble_port_freertos.h"
+/* 访问 ble_hs_cfg.gatts_register_cb（enable 前设置 blufi 的 GATT 注册回调） */
 #include "host/ble_hs.h"
-#include "host/ble_store.h"
-#include "services/gap/ble_svc_gap.h"
-#include "services/gatt/ble_svc_gatt.h"
-#include "store/config/ble_store_config.h"
 
 #define WIFI_CONNECTION_MAX_RETRY 5u
-
-/* NimBLE 配置存储初始化（头文件未导出，按官方示例声明） */
-void ble_store_config_init(void);
 
 static const char *TAG = "BLUFI_PROV";
 
@@ -173,7 +164,7 @@ static void blufi_event_cb(esp_blufi_cb_event_t event, esp_blufi_cb_param_t *par
 {
     switch (event) {
     case ESP_BLUFI_EVENT_INIT_FINISH:
-        ESP_LOGI(TAG, "BluFi init finished, advertising as %s", s_config.device_name);
+        ESP_LOGI(TAG, "BluFi init finished, advertising");
         esp_blufi_adv_start();
         break;
     case ESP_BLUFI_EVENT_DEINIT_FINISH:
@@ -313,28 +304,29 @@ static void blufi_event_cb(esp_blufi_cb_event_t event, esp_blufi_cb_param_t *par
     }
 }
 
-/* ── NimBLE host ───────────────────────────────────────────────────────── */
-static void blufi_on_reset(int reason)
+/* ── BluFi 钩子（经 ble_host 挂载） ────────────────────────────────────── */
+static esp_err_t blufi_pre_enable(void)
 {
-    ESP_LOGW(TAG, "NimBLE reset, reason=%d", reason);
+    /* enable 前：注册回调 + 配置 blufi 的 GATT 服务注册（NimBLE 要求 sync 前） */
+    static esp_blufi_callbacks_t callbacks = {
+        .event_cb = blufi_event_cb,
+        .negotiate_data_handler = blufi_dh_negotiate_data_handler,
+        .encrypt_func = blufi_aes_encrypt,
+        .decrypt_func = blufi_aes_decrypt,
+        .checksum_func = blufi_crc_checksum,
+    };
+    ESP_RETURN_ON_ERROR(esp_blufi_register_callbacks(&callbacks), TAG,
+                        "BluFi callback registration failed");
+    ble_hs_cfg.gatts_register_cb = esp_blufi_gatt_svr_register_cb;
+    (void)esp_blufi_gatt_svr_init();
+    esp_blufi_btc_init();
+    return ESP_OK;
 }
 
 static void blufi_on_sync(void)
 {
-    /* host sync 后、起广播前设置 GAP 设备名（NimBLE 惯例，确保广播用我们要的名字） */
-    if (s_config.device_name[0] != '\0') {
-        ble_svc_gap_device_name_set(s_config.device_name);
-    }
-    ESP_LOGI(TAG, "NimBLE synced, GAP name='%s', init BluFi profile",
-             ble_svc_gap_device_name());
+    ESP_LOGI(TAG, "NimBLE synced, init BluFi profile");
     esp_blufi_profile_init();
-}
-
-static void blufi_host_task(void *param)
-{
-    (void)param;
-    nimble_port_run();
-    nimble_port_freertos_deinit();
 }
 
 /* ── public: init ──────────────────────────────────────────────────────── */
@@ -345,51 +337,14 @@ esp_err_t blufi_provisioning_init(const blufi_provisioning_config_t *config)
     }
     s_config = *config;
 
-    /* 1. BT controller（BLE only） */
-    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-    ESP_RETURN_ON_ERROR(esp_bt_controller_init(&bt_cfg), TAG,
-                        "BT controller init failed");
-    ESP_RETURN_ON_ERROR(esp_bt_controller_enable(ESP_BT_MODE_BLE), TAG,
-                        "BT controller enable failed");
+    /* 向 ble_host 挂载钩子：enable 前配置 blufi GATT，sync 后 init profile。
+     * BLE host 由 ble_host 统一拉起。 */
+    ESP_RETURN_ON_ERROR(ble_host_register_pre_enable(blufi_pre_enable), TAG,
+                        "ble_host pre-enable registration failed");
+    ESP_RETURN_ON_ERROR(ble_host_register_on_sync(blufi_on_sync), TAG,
+                        "ble_host on-sync registration failed");
 
-    /* 2. BluFi 回调（profile init 在 NimBLE sync 后触发） */
-    static esp_blufi_callbacks_t callbacks = {
-        .event_cb = blufi_event_cb,
-        .negotiate_data_handler = blufi_dh_negotiate_data_handler,
-        .encrypt_func = blufi_aes_encrypt,
-        .decrypt_func = blufi_aes_decrypt,
-        .checksum_func = blufi_crc_checksum,
-    };
-    ESP_RETURN_ON_ERROR(esp_blufi_register_callbacks(&callbacks), TAG,
-                        "BluFi callback registration failed");
-
-    /* 3. NimBLE host + 设备名（SoftAP 名带 MAC 后缀，便于辨认） */
-    ESP_RETURN_ON_ERROR(esp_nimble_init(), TAG, "NimBLE init failed");
-    ble_hs_cfg.reset_cb = blufi_on_reset;
-    ble_hs_cfg.sync_cb = blufi_on_sync;
-    ble_hs_cfg.gatts_register_cb = esp_blufi_gatt_svr_register_cb;
-    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
-    ble_hs_cfg.sm_io_cap = 4;   /* 无输入输出 → just-works 配对 */
-    ble_hs_cfg.sm_sc = 0;
-    ble_store_config_init();
-    (void)esp_blufi_gatt_svr_init();
-    esp_blufi_btc_init();
-
-    /* 应用在此注册额外的 GATT 服务（如 ble_echo），须在 sync 前完成 */
-    if (s_config.register_services_cb != NULL) {
-        const esp_err_t cb_err = s_config.register_services_cb();
-        if (cb_err != ESP_OK) {
-            ESP_LOGW(TAG, "BLE services registration failed: %s",
-                     esp_err_to_name(cb_err));
-        }
-    }
-
-    ESP_RETURN_ON_ERROR(esp_nimble_enable(blufi_host_task), TAG,
-                        "NimBLE enable failed");
-    ESP_LOGI(TAG, "NimBLE host ready, device name: %s",
-             s_config.device_name[0] != '\0' ? s_config.device_name : "(default)");
-
-    /* 4. WiFi/IP 事件：向手机上报连接状态 */
+    /* WiFi/IP 事件：向手机上报连接状态 */
     ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                         &wifi_event_handler, NULL), TAG,
                         "WiFi event registration failed");
@@ -401,7 +356,7 @@ esp_err_t blufi_provisioning_init(const blufi_provisioning_config_t *config)
     copy_str(s_ap_ssid, sizeof(s_ap_ssid), wifi_manager_get_ap_ssid());
     copy_str(s_ap_password, sizeof(s_ap_password), wifi_manager_get_ap_password());
 
-    ESP_LOGI(TAG, "BluFi provisioning ready, version %04x (awaiting phone)",
+    ESP_LOGI(TAG, "BluFi provisioning registered (host via ble_host), version %04x",
              esp_blufi_get_version());
     return ESP_OK;
 }

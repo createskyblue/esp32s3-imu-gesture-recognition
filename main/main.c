@@ -14,6 +14,7 @@
 #include "wifi_manager.h"
 #if CONFIG_BLE_ENABLED
 #include "ble_echo.h"
+#include "ble_host.h"
 #include "ble_host_test.h"
 #endif
 #if CONFIG_BLUFI_PROVISIONING_ENABLED
@@ -51,14 +52,6 @@ static void build_ble_device_name(char *buf, size_t buf_size)
     }
     snprintf(buf, buf_size, "ESP32S3-%02X%02X%02X", mac[3], mac[4], mac[5]);
 }
-
-#if CONFIG_BLUFI_PROVISIONING_ENABLED
-/* NimBLE host sync 前注册 echo 的 GATT 服务（由 blufi_provisioning_init 回调） */
-static esp_err_t register_ble_services(void)
-{
-    return ble_echo_init();
-}
-#endif
 
 void app_main(void)
 {
@@ -135,28 +128,35 @@ void app_main(void)
                  esp_err_to_name(wifi_err));
     }
 
-    /* ── BluFi (BLE) 配网 ───────────────────────────────────── */
-    /* 开关见 main/Kconfig.projbuild：CONFIG_BLUFI_PROVISIONING_ENABLED（配网，
-     * 依赖 BLE_ENABLED）。当前 BLE host 由此组件拉起（NimBLE）。 */
+    /* ── BLE：各功能向 ble_host 注册钩子，再统一拉起 host ── */
+    /* 开关见 main/Kconfig.projbuild：BLE_ENABLED（总开关）+ BLUFI_PROVISIONING_ENABLED（配网）。 */
+#if CONFIG_BLE_ENABLED
 #if CONFIG_BLUFI_PROVISIONING_ENABLED
     blufi_provisioning_config_t blufi_cfg = {
         .apply_credentials = wifi_config_store_apply_credentials,
-        .register_services_cb = register_ble_services,
     };
-    /* BLE 广播名用短版（31 字节广播包限制），仍按 MAC 唯一 */
-    build_ble_device_name(blufi_cfg.device_name, sizeof(blufi_cfg.device_name));
     esp_err_t blufi_err = blufi_provisioning_init(&blufi_cfg);
     if (blufi_err != ESP_OK) {
         ESP_LOGW(TAG, "BluFi provisioning init failed: %s; BLE 配网不可用",
                  esp_err_to_name(blufi_err));
     }
 #endif
-
-    /* ── BLE 主机测试：扫描睡眠垫(NUS) → 连接 → 订阅 → 打印数据 ── */
-    /* 需 BLE host 已拉起（当前由 blufi_provisioning_init 完成）。 */
-#if CONFIG_BLE_ENABLED
+    /* BLE echo 示例：演示挂载自定义 GATT 服务 */
+    if (ble_echo_init() != ESP_OK) {
+        ESP_LOGW(TAG, "BLE echo init failed");
+    }
+    /* BLE 主机测试：扫描睡眠垫(NUS) → 连接 → 订阅 → 打印数据 */
     if (ble_host_test_init() != ESP_OK) {
         ESP_LOGW(TAG, "BLE host test init failed");
+    }
+
+    /* 统一拉起 BLE host（触发上面注册的各钩子） */
+    ble_host_config_t host_cfg = {0};
+    /* BLE 广播名用短版（31 字节广播包限制），仍按 MAC 唯一 */
+    build_ble_device_name(host_cfg.device_name, sizeof(host_cfg.device_name));
+    esp_err_t host_err = ble_host_init(&host_cfg);
+    if (host_err != ESP_OK) {
+        ESP_LOGW(TAG, "BLE host init failed: %s", esp_err_to_name(host_err));
     }
 #endif
 

@@ -1,7 +1,9 @@
 #include "ble_host_test.h"
+#include "ble_host.h"
 
 #include <string.h>
 
+#include "esp_check.h"
 #include "esp_log.h"
 #include "host/ble_gatt.h"
 #include "host/ble_hs.h"
@@ -272,8 +274,9 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
     return 0;
 }
 
-esp_err_t ble_host_test_init(void)
+static void host_on_sync(void)
 {
+    /* host sync 后发扫描（enable 后立即调用会因未 sync 而失败） */
     struct ble_gap_disc_params params = {
         .filter_duplicates = 1,
         .passive = 0,
@@ -286,8 +289,15 @@ esp_err_t ble_host_test_init(void)
                           gap_event_handler, NULL);
     if (rc != 0) {
         ESP_LOGE(BLE_HOST_TAG, "scan start failed: %d", rc);
-        return ESP_FAIL;
+    } else {
+        ESP_LOGI(BLE_HOST_TAG, "scanning for sleep mat NUS");
     }
-    ESP_LOGI(BLE_HOST_TAG, "init OK (BLE central, scanning for sleep mat NUS)");
+}
+
+esp_err_t ble_host_test_init(void)
+{
+    ESP_RETURN_ON_ERROR(ble_host_register_on_sync(host_on_sync), BLE_HOST_TAG,
+                        "ble_host on-sync registration failed");
+    ESP_LOGI(BLE_HOST_TAG, "init OK (BLE central)");
     return ESP_OK;
 }

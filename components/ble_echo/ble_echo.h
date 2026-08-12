@@ -14,8 +14,8 @@ extern "C" {
  * 用于演示如何在 BLE 上"挂载"自定义 GATT 服务作为额外特征
  *（与 BluFi 配网服务并存）。
  *
- * 需在 BLE 初始化之后调用（当前由 blufi_provisioning_init 拉起）。
- * 由 CONFIG_BLUFI_PROVISIONING_ENABLED 决定是否编译。
+ * 需在 ble_host_init() 之前调用（注册 pre_enable 钩子，由 ble_host 统一拉起 host）。
+ * 由 CONFIG_BLE_ENABLED 决定是否编译。
  */
 esp_err_t ble_echo_init(void);
 
