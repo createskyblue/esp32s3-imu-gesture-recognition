@@ -200,7 +200,8 @@ class ComponentBoundaryTests(unittest.TestCase):
         ]:
             self.assertNotIn(hard_coded_policy, source)
         self.assertIn("wifi_manager_config_t wifi_config = {", main_source)
-        self.assertIn('.ap_ssid = "ESP32S3-Template"', main_source)
+        self.assertIn(".ap_ssid = DEFAULT_AP_SSID_BASE", main_source)
+        self.assertIn('"ESP32S3-Template"', main_source)
         self.assertIn('.sntp_server = "ntp.aliyun.com"', main_source)
         self.assertIn("wifi_manager_credentials_t", store_header)
 

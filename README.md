@@ -144,7 +144,7 @@ idf.py -p COMx flash monitor
 
 `wifi_config.json` 除 `ssid` / `password` 外还支持 STA 的 IP 策略字段：`ip_mode`（`"dhcp"` 或 `"static"`，缺省 DHCP），静态模式下还需 `static_ip`、`netmask`、`gateway`、`dns` 四个 IPv4 地址。静态模式会停用 STA 的 DHCP 客户端并手动设定地址与 DNS；切回 DHCP 时恢复自动获取。AP 热点身份（`ap_ssid` / `ap_password`）也可持久化，缺省回退到 `main/main.c` 的编译期默认值；网页端可独立修改，改动约 3 秒后生效并会断开当前连到热点的客户端。
 
-AP 名称和密码、信道、最大客户端数、是否启用 captive-portal DNS 以及 SNTP 服务器均在 `main/main.c` 的启动配置中给出，应用可在初始化前直接调整，无需修改 `wifi_manager` 组件。
+AP 名称和密码、信道、最大客户端数、是否启用 captive-portal DNS 以及 SNTP 服务器均在 `main/main.c` 的启动配置中给出，应用可在初始化前直接调整，无需修改 `wifi_manager` 组件。默认 AP 名称会自动追加芯片 MAC 派生的 6 位十六进制后缀（如 `ESP32S3-Template-A1B2C3`），便于区分同一模板烧录的多块板子；持久化配置中的自定义 AP 名称（不等于默认基础名时）优先级更高。
 
 LittleFS 的挂载和并发访问统一由应用层 `app_storage` 管理。文件系统 OTA 只接收应用传入的分区标签和“卸载/重挂载”回调，`ota_manager` 不再自行依赖 LittleFS；配置保存、静态文件和文件管理请求与 OTA 擦写使用同一存储租约，避免同时访问底层分区。
 
@@ -155,6 +155,14 @@ WiFi 配置更新采用“临时文件写入并同步 → 应用运行时配置 
 ```bash
 cp main/wifi_config.example.json data/wifi_config.json
 ```
+
+**BluFi (BLE) 配网**：固件内置 `blufi_provisioning` 组件，BLE 广播名与 SoftAP 名一致（含 MAC 后缀）。手机配网可选：
+- 微信小程序 **[BlufiEsp32WeChat](https://github.com/xuhongv/BlufiEsp32WeChat)**（免装 App）；
+- EspBlufi 原生 App（Android: EspBlufi / iOS: EspBlufiForiOS）。
+
+配网时下发 STA 凭据，经 `wifi_config_store_apply_credentials` 落地（应用 + 原子持久化 + 失败回滚），与 Web 配网共用同一套凭据与持久化路径。WiFi 模式保持 APSTA（由 `wifi_manager` 统一管理），BLE 常开以便随时（重新）配网。
+
+该功能是编译开关 **`CONFIG_BLUFI_PROVISIONING_ENABLED`**（默认在 `sdkconfig.defaults` 中为 `y`）。开启会引入整个蓝牙（Bluedroid）栈，**常驻约 60 KB SRAM**；若板子不需要配网，将其置 `n` 可把蓝牙栈整体剔除、回收这部分内存（同时 Bluetooth 相关 `CONFIG_BT_*` 选项失效）。
 
 ### 可选启用 SD 卡
 
