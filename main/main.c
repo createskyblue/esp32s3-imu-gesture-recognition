@@ -14,6 +14,7 @@
 #include "wifi_manager.h"
 #if CONFIG_BLUFI_PROVISIONING_ENABLED
 #include "ble_echo.h"
+#include "ble_host_test.h"
 #include "blufi_provisioning.h"
 #endif
 
@@ -117,6 +118,7 @@ void app_main(void)
 #if CONFIG_BLUFI_PROVISIONING_ENABLED
     blufi_provisioning_config_t blufi_cfg = {
         .apply_credentials = wifi_config_store_apply_credentials,
+        .gap_event_cb = ble_host_test_gap_cb,  /* 扫描结果经由 GAP 分发器转给主机测试 */
     };
     /* BLE 设备名与 SoftAP 名保持一致（含 MAC 后缀），便于辨认 */
     snprintf(blufi_cfg.device_name, sizeof(blufi_cfg.device_name),
@@ -130,6 +132,11 @@ void app_main(void)
     /* BLE echo 示例：演示在 BLE 上挂载自定义 GATT 服务（与 BluFi 配网并存） */
     if (ble_echo_init() != ESP_OK) {
         ESP_LOGW(TAG, "BLE echo init failed");
+    }
+
+    /* BLE 主机测试：扫描睡眠垫(NUS) → 连接 → 订阅 → 打印数据 */
+    if (ble_host_test_init() != ESP_OK) {
+        ESP_LOGW(TAG, "BLE host test init failed");
     }
 #endif
 
