@@ -310,6 +310,33 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertNotIn("hello_web_register", main_source)
         self.assertNotIn('"hello_web.c"', cmake_source)
 
+    def test_ble_features_are_independent_of_blufi_component(self):
+        echo_cmake = (
+            PROJECT_ROOT / "components" / "ble_echo" / "CMakeLists.txt"
+        ).read_text(encoding="utf-8")
+        host_cmake = (
+            PROJECT_ROOT / "components" / "ble_host_test" / "CMakeLists.txt"
+        ).read_text(encoding="utf-8")
+
+        # 编译期独立于配网组件：不 REQUIRES blufi_provisioning
+        self.assertNotIn("blufi_provisioning", echo_cmake)
+        self.assertNotIn("blufi_provisioning", host_cmake)
+        # 由 BLE 总开关 gate，而不是配网开关
+        self.assertIn("CONFIG_BLE_ENABLED", echo_cmake)
+        self.assertIn("CONFIG_BLE_ENABLED", host_cmake)
+        self.assertNotIn("CONFIG_BLUFI_PROVISIONING_ENABLED", echo_cmake)
+        self.assertNotIn("CONFIG_BLUFI_PROVISIONING_ENABLED", host_cmake)
+
+    def test_ble_enable_is_the_master_switch(self):
+        kconfig = (PROJECT_ROOT / "main" / "Kconfig.projbuild").read_text(
+            encoding="utf-8"
+        )
+
+        # BLE 总开关 + 配网子开关，配网 select BLE
+        self.assertIn("menuconfig BLE_ENABLED", kconfig)
+        self.assertIn("menuconfig BLUFI_PROVISIONING_ENABLED", kconfig)
+        self.assertIn("select BLE_ENABLED", kconfig)
+
     def test_defaults_do_not_enable_unused_runtime_features(self):
         defaults = (PROJECT_ROOT / "sdkconfig.defaults").read_text(
             encoding="utf-8"

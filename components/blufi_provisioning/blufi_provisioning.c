@@ -321,7 +321,7 @@ static void blufi_on_reset(int reason)
 
 static void blufi_on_sync(void)
 {
-    /* esp_nimble_enable 启动 host 时会重置 GAP 设备名，这里在广播前重新设置 */
+    /* host sync 后、起广播前设置 GAP 设备名（NimBLE 惯例，确保广播用我们要的名字） */
     if (s_config.device_name[0] != '\0') {
         ble_svc_gap_device_name_set(s_config.device_name);
     }
@@ -377,7 +377,11 @@ esp_err_t blufi_provisioning_init(const blufi_provisioning_config_t *config)
 
     /* 应用在此注册额外的 GATT 服务（如 ble_echo），须在 sync 前完成 */
     if (s_config.register_services_cb != NULL) {
-        s_config.register_services_cb();
+        const esp_err_t cb_err = s_config.register_services_cb();
+        if (cb_err != ESP_OK) {
+            ESP_LOGW(TAG, "BLE services registration failed: %s",
+                     esp_err_to_name(cb_err));
+        }
     }
 
     ESP_RETURN_ON_ERROR(esp_nimble_enable(blufi_host_task), TAG,
@@ -402,7 +406,3 @@ esp_err_t blufi_provisioning_init(const blufi_provisioning_config_t *config)
     return ESP_OK;
 }
 
-bool blufi_provisioning_is_session_active(void)
-{
-    return s_ble_connected;
-}

@@ -1,5 +1,5 @@
 set(ECHO_SRCS "")
-if(CONFIG_BLUFI_PROVISIONING_ENABLED)
+if(CONFIG_BLE_ENABLED)
     list(APPEND ECHO_SRCS "ble_echo.c")
 endif()
 

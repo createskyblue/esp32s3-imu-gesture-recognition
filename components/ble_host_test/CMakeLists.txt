@@ -1,5 +1,5 @@
 set(HOST_SRCS "")
-if(CONFIG_BLUFI_PROVISIONING_ENABLED)
+if(CONFIG_BLE_ENABLED)
     list(APPEND HOST_SRCS "ble_host_test.c")
 endif()
 

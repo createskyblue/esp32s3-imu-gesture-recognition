@@ -17,8 +17,9 @@ typedef struct {
      *  例如 wifi_config_store_apply_credentials()。不可为空。 */
     esp_err_t (*apply_credentials)(const wifi_manager_credentials_t *credentials);
     /** 可选：NimBLE host 初始化后、enable 前回调。应用在这里注册额外的 GATT
-     *  服务（如 ble_echo）—— NimBLE 要求所有服务在 host sync 前配置好。NULL 忽略。 */
-    void (*register_services_cb)(void);
+     *  服务（如 ble_echo）—— NimBLE 要求所有服务在 host sync 前配置好。
+     *  返回非 ESP_OK 会上报日志。NULL 忽略。 */
+    esp_err_t (*register_services_cb)(void);
 } blufi_provisioning_config_t;
 
 /**
@@ -38,9 +39,6 @@ typedef struct {
  * CONFIG_BLUFI_PROVISIONING_ENABLED 控制编译（关闭时 bt 组件整体不参与构建）。
  */
 esp_err_t blufi_provisioning_init(const blufi_provisioning_config_t *config);
-
-/** 当前是否有配网手机连着 BLE（供主机代码判断是否给配网让路）。 */
-bool blufi_provisioning_is_session_active(void);
 
 #ifdef __cplusplus
 }

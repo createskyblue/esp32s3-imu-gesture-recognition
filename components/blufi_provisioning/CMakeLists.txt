@@ -5,5 +5,5 @@ endif()
 
 idf_component_register(SRCS "${BLUFI_SRCS}"
     INCLUDE_DIRS "."
-    REQUIRES wifi_manager bt
-    PRIV_REQUIRES nvs_flash mbedtls esp_hw_support esp_event esp_wifi log freertos)
+    REQUIRES wifi_manager
+    PRIV_REQUIRES bt nvs_flash mbedtls esp_hw_support esp_event esp_wifi log freertos)

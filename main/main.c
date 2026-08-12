@@ -12,9 +12,11 @@
 #include "web_platform.h"
 #include "wifi_config_store.h"
 #include "wifi_manager.h"
-#if CONFIG_BLUFI_PROVISIONING_ENABLED
+#if CONFIG_BLE_ENABLED
 #include "ble_echo.h"
 #include "ble_host_test.h"
+#endif
+#if CONFIG_BLUFI_PROVISIONING_ENABLED
 #include "blufi_provisioning.h"
 #endif
 
@@ -52,11 +54,9 @@ static void build_ble_device_name(char *buf, size_t buf_size)
 
 #if CONFIG_BLUFI_PROVISIONING_ENABLED
 /* NimBLE host sync 前注册 echo 的 GATT 服务（由 blufi_provisioning_init 回调） */
-static void register_ble_services(void)
+static esp_err_t register_ble_services(void)
 {
-    if (ble_echo_init() != ESP_OK) {
-        ESP_LOGW(TAG, "BLE echo init failed");
-    }
+    return ble_echo_init();
 }
 #endif
 
@@ -136,8 +136,8 @@ void app_main(void)
     }
 
     /* ── BluFi (BLE) 配网 ───────────────────────────────────── */
-    /* 编译开关 CONFIG_BLUFI_PROVISIONING_ENABLED（见 main/Kconfig.projbuild）：
-     * 开启会引入整个蓝牙栈，常驻约 60 KB SRAM；关闭则完全不编译 BLE。 */
+    /* 开关见 main/Kconfig.projbuild：CONFIG_BLUFI_PROVISIONING_ENABLED（配网，
+     * 依赖 BLE_ENABLED）。当前 BLE host 由此组件拉起（NimBLE）。 */
 #if CONFIG_BLUFI_PROVISIONING_ENABLED
     blufi_provisioning_config_t blufi_cfg = {
         .apply_credentials = wifi_config_store_apply_credentials,
@@ -150,8 +150,11 @@ void app_main(void)
         ESP_LOGW(TAG, "BluFi provisioning init failed: %s; BLE 配网不可用",
                  esp_err_to_name(blufi_err));
     }
+#endif
 
-    /* BLE 主机测试：扫描睡眠垫(NUS) → 连接 → 订阅 → 打印数据 */
+    /* ── BLE 主机测试：扫描睡眠垫(NUS) → 连接 → 订阅 → 打印数据 ── */
+    /* 需 BLE host 已拉起（当前由 blufi_provisioning_init 完成）。 */
+#if CONFIG_BLE_ENABLED
     if (ble_host_test_init() != ESP_OK) {
         ESP_LOGW(TAG, "BLE host test init failed");
     }

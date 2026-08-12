@@ -1,13 +1,17 @@
+menuconfig BLE_ENABLED
+    bool "BLE (Bluetooth Low Energy)"
+    default y
+    select BT_ENABLED
+    help
+        BLE 总开关（NimBLE host）。关闭则 BLE 相关组件（echo / 主机测试等）
+        都不编译，省约 40 KB SRAM。当前 BLE host 由 blufi_provisioning 拉起，
+        若仅开启 BLE 而关闭配网，需自行拉起 host。
+
 menuconfig BLUFI_PROVISIONING_ENABLED
     bool "BluFi (BLE) WiFi provisioning"
     default y
-    select BT_ENABLED
+    select BLE_ENABLED
     select BT_NIMBLE_BLUFI_ENABLE
     help
-        Enables the BluFi (BLE) provisioning component (NimBLE host), usable
-        from the EspBlufi mobile app or the BlufiEsp32WeChat WeChat mini-program
-        (https://github.com/xuhongv/BlufiEsp32WeChat).
-
-        Enabling this pulls in the NimBLE (BLE-only) stack, which reserves about
-        40 KB of SRAM for the lifetime of the firmware while BLE is up.
-        Set it to "n" to strip BLE entirely and reclaim that memory.
+        BluFi 配网（依赖 BLE，开启会自动启用 BLE）。可用 EspBlufi App 或微信小程序
+        BlufiEsp32WeChat（https://github.com/xuhongv/BlufiEsp32WeChat）配网。
