@@ -53,7 +53,7 @@ static int echo_access_cb(uint16_t conn_handle, uint16_t attr_handle,
     return BLE_ATT_ERR_UNLIKELY;
 }
 
-/* 服务 0xAB01：RX 0xAB02 (write) / TX 0xAB03 (read + notify) */
+/* 服务 0xAB01：RX 0xAB02 (write) / TX 0xAB03 (notify) */
 static const struct ble_gatt_svc_def echo_svcs[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,

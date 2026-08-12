@@ -350,9 +350,15 @@ class ComponentBoundaryTests(unittest.TestCase):
         # BLE-only（无配网）时 echo 才自行广播，不与 blufi 广播冲突
         self.assertIn("CONFIG_BLUFI_PROVISIONING_ENABLED", echo_source)
         self.assertIn("ble_gap_adv_start", echo_source)
-        # ble_host 统一补标准 GAP/GATT 服务（BLE-only 时缺 blufi 代调）
-        self.assertIn("ble_svc_gap_init", host_source)
-        self.assertIn("ble_svc_gatt_init", host_source)
+        # ble_host 仅在 BLE-only 时补标准 GAP/GATT 服务（避免与 blufi 重复注册）
+        self.assertRegex(
+            host_source,
+            re.compile(
+                r"#if\s+!CONFIG_BLUFI_PROVISIONING_ENABLED.*?"
+                r"ble_svc_gap_init\(\);\s*\n\s*ble_svc_gatt_init\(\);",
+                re.DOTALL,
+            ),
+        )
 
     def test_defaults_do_not_enable_unused_runtime_features(self):
         defaults = (PROJECT_ROOT / "sdkconfig.defaults").read_text(
