@@ -13,6 +13,7 @@
 #include "wifi_config_store.h"
 #include "wifi_manager.h"
 #if CONFIG_BLUFI_PROVISIONING_ENABLED
+#include "ble_echo.h"
 #include "blufi_provisioning.h"
 #endif
 
@@ -124,6 +125,11 @@ void app_main(void)
     if (blufi_err != ESP_OK) {
         ESP_LOGW(TAG, "BluFi provisioning init failed: %s; BLE 配网不可用",
                  esp_err_to_name(blufi_err));
+    }
+
+    /* BLE echo 示例：演示在 BLE 上挂载自定义 GATT 服务（与 BluFi 配网并存） */
+    if (ble_echo_init() != ESP_OK) {
+        ESP_LOGW(TAG, "BLE echo init failed");
     }
 #endif
 

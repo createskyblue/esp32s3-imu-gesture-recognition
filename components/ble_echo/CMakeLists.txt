@@ -1,0 +1,8 @@
+set(ECHO_SRCS "")
+if(CONFIG_BLUFI_PROVISIONING_ENABLED)
+    list(APPEND ECHO_SRCS "ble_echo.c")
+endif()
+
+idf_component_register(SRCS "${ECHO_SRCS}"
+    INCLUDE_DIRS "."
+    PRIV_REQUIRES bt log)
