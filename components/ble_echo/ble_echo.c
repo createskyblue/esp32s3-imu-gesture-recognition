@@ -88,15 +88,11 @@ static esp_err_t echo_pre_enable(void)
     return ESP_OK;
 }
 
-static int echo_gap_event(struct ble_gap_event *event, void *arg)
-{
-    (void)event; (void)arg;
-    return 0;
-}
-
 /* BLE-only（无配网广播）时，由 echo 发起广播以便被发现 */
 #if !CONFIG_BLUFI_PROVISIONING_ENABLED
-static void echo_on_sync(void)
+static int echo_gap_event(struct ble_gap_event *event, void *arg);
+
+static void echo_start_adv(void)
 {
     struct ble_hs_adv_fields fields = {0};
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
@@ -106,8 +102,10 @@ static void echo_on_sync(void)
     fields.name = (uint8_t *)name;
     fields.name_len = strlen(name);
     fields.name_is_complete = 1;
-    ble_gap_adv_set_fields(&fields);
-
+    if (ble_gap_adv_set_fields(&fields) != 0) {
+        ESP_LOGW(BLE_ECHO_TAG, "set adv fields failed");
+        return;
+    }
     uint8_t own_addr_type;
     if (ble_hs_id_infer_auto(0, &own_addr_type) != 0) {
         ESP_LOGW(BLE_ECHO_TAG, "cannot infer own addr type, skip advertising");
@@ -117,9 +115,31 @@ static void echo_on_sync(void)
         .conn_mode = BLE_GAP_CONN_MODE_UND,
         .disc_mode = BLE_GAP_DISC_MODE_GEN,
     };
-    ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &adv_params,
-                      echo_gap_event, NULL);
+    if (ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &adv_params,
+                          echo_gap_event, NULL) != 0) {
+        ESP_LOGW(BLE_ECHO_TAG, "adv start failed");
+        return;
+    }
     ESP_LOGI(BLE_ECHO_TAG, "advertising (BLE-only mode)");
+}
+
+static int echo_gap_event(struct ble_gap_event *event, void *arg)
+{
+    (void)arg;
+    switch (event->type) {
+    case BLE_GAP_EVENT_DISCONNECT:
+        /* 断连后重新广播，保证可反复被发现 */
+        echo_start_adv();
+        break;
+    default:
+        break;
+    }
+    return 0;
+}
+
+static void echo_on_sync(void)
+{
+    echo_start_adv();
 }
 #endif
 

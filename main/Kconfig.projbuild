@@ -2,9 +2,9 @@ menuconfig BLE_ENABLED
     bool "BLE (Bluetooth Low Energy)"
     default y
     select BT_ENABLED
-    select BT_NIMBLE_ENABLED
     help
-        BLE 总开关（NimBLE host）。由 ble_host 组件统一拉起；配网/echo/主机
+        BLE 总开关（NimBLE host，host 选择见 sdkconfig.defaults 的
+        CONFIG_BT_NIMBLE_ENABLED）。由 ble_host 组件统一拉起；配网/echo/主机
         等功能各自注册钩子。关闭则 BLE 相关组件都不编译，省约 40 KB SRAM。
 
 menuconfig BLUFI_PROVISIONING_ENABLED
