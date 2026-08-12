@@ -18,24 +18,36 @@
 void ble_store_config_init(void);
 
 #define BLE_HOST_TAG       "BLE_HOST"
-#define BLE_HOST_MAX_HOOKS 4u
+#define BLE_HOST_MAX_HOOKS 8u
 
 static ble_host_config_t s_config;
+static const char *s_pre_enable_names[BLE_HOST_MAX_HOOKS];
 static esp_err_t (*s_pre_enable[BLE_HOST_MAX_HOOKS])(void);
-static void (*s_on_sync[BLE_HOST_MAX_HOOKS])(void);
 static uint8_t s_pre_enable_n;
+static const char *s_on_sync_names[BLE_HOST_MAX_HOOKS];
+static void (*s_on_sync[BLE_HOST_MAX_HOOKS])(void);
 static uint8_t s_on_sync_n;
 
-esp_err_t ble_host_register_pre_enable(esp_err_t (*cb)(void))
+esp_err_t ble_host_register_pre_enable(const char *name, esp_err_t (*cb)(void))
 {
-    if (cb == NULL || s_pre_enable_n >= BLE_HOST_MAX_HOOKS) return ESP_ERR_INVALID_ARG;
+    if (name == NULL || cb == NULL) return ESP_ERR_INVALID_ARG;
+    if (s_pre_enable_n >= BLE_HOST_MAX_HOOKS) {
+        ESP_LOGE(BLE_HOST_TAG, "pre-enable hook table full (max %u)", BLE_HOST_MAX_HOOKS);
+        return ESP_ERR_NO_MEM;
+    }
+    s_pre_enable_names[s_pre_enable_n] = name;
     s_pre_enable[s_pre_enable_n++] = cb;
     return ESP_OK;
 }
 
-esp_err_t ble_host_register_on_sync(void (*cb)(void))
+esp_err_t ble_host_register_on_sync(const char *name, void (*cb)(void))
 {
-    if (cb == NULL || s_on_sync_n >= BLE_HOST_MAX_HOOKS) return ESP_ERR_INVALID_ARG;
+    if (name == NULL || cb == NULL) return ESP_ERR_INVALID_ARG;
+    if (s_on_sync_n >= BLE_HOST_MAX_HOOKS) {
+        ESP_LOGE(BLE_HOST_TAG, "on-sync hook table full (max %u)", BLE_HOST_MAX_HOOKS);
+        return ESP_ERR_NO_MEM;
+    }
+    s_on_sync_names[s_on_sync_n] = name;
     s_on_sync[s_on_sync_n++] = cb;
     return ESP_OK;
 }
@@ -54,6 +66,7 @@ static void ble_host_on_sync(void)
     ESP_LOGI(BLE_HOST_TAG, "host synced, GAP name='%s'",
              s_config.device_name[0] ? s_config.device_name : "(default)");
     for (uint8_t i = 0; i < s_on_sync_n; i++) {
+        ESP_LOGD(BLE_HOST_TAG, "on-sync hook '%s'", s_on_sync_names[i]);
         s_on_sync[i]();
     }
 }
@@ -90,8 +103,8 @@ esp_err_t ble_host_init(const ble_host_config_t *config)
     for (uint8_t i = 0; i < s_pre_enable_n; i++) {
         const esp_err_t err = s_pre_enable[i]();
         if (err != ESP_OK) {
-            ESP_LOGW(BLE_HOST_TAG, "pre-enable hook %u failed: %s",
-                     (unsigned)i, esp_err_to_name(err));
+            ESP_LOGW(BLE_HOST_TAG, "pre-enable hook '%s' failed: %s",
+                     s_pre_enable_names[i], esp_err_to_name(err));
         }
     }
 

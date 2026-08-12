@@ -11,7 +11,7 @@
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
 
-#define BLE_HOST_TAG     "BLE_HOST"
+#define BLE_HOST_TAG     "BLE_HOST_TEST"
 
 /* 睡眠垫 Nordic UART Service (NUS)：UUID 按 BLE 小端字节序
  * 6E400001-B5A3-F393-E0A9-E50E24DCCA9E → 9E CA DC 24 0E E5 A9 E0 93 F3 A3 B5 01 00 40 6E */
@@ -296,8 +296,8 @@ static void host_on_sync(void)
 
 esp_err_t ble_host_test_init(void)
 {
-    ESP_RETURN_ON_ERROR(ble_host_register_on_sync(host_on_sync), BLE_HOST_TAG,
-                        "ble_host on-sync registration failed");
+    ESP_RETURN_ON_ERROR(ble_host_register_on_sync("host_test", host_on_sync),
+                        BLE_HOST_TAG, "ble_host on-sync registration failed");
     ESP_LOGI(BLE_HOST_TAG, "init OK (BLE central)");
     return ESP_OK;
 }

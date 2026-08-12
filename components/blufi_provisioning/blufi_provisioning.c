@@ -318,7 +318,9 @@ static esp_err_t blufi_pre_enable(void)
     ESP_RETURN_ON_ERROR(esp_blufi_register_callbacks(&callbacks), TAG,
                         "BluFi callback registration failed");
     ble_hs_cfg.gatts_register_cb = esp_blufi_gatt_svr_register_cb;
-    (void)esp_blufi_gatt_svr_init();
+    if (esp_blufi_gatt_svr_init() != 0) {
+        ESP_LOGW(TAG, "BluFi GATT svr init failed");
+    }
     esp_blufi_btc_init();
     return ESP_OK;
 }
@@ -339,9 +341,9 @@ esp_err_t blufi_provisioning_init(const blufi_provisioning_config_t *config)
 
     /* 向 ble_host 挂载钩子：enable 前配置 blufi GATT，sync 后 init profile。
      * BLE host 由 ble_host 统一拉起。 */
-    ESP_RETURN_ON_ERROR(ble_host_register_pre_enable(blufi_pre_enable), TAG,
+    ESP_RETURN_ON_ERROR(ble_host_register_pre_enable("blufi", blufi_pre_enable), TAG,
                         "ble_host pre-enable registration failed");
-    ESP_RETURN_ON_ERROR(ble_host_register_on_sync(blufi_on_sync), TAG,
+    ESP_RETURN_ON_ERROR(ble_host_register_on_sync("blufi", blufi_on_sync), TAG,
                         "ble_host on-sync registration failed");
 
     /* WiFi/IP 事件：向手机上报连接状态 */

@@ -6,7 +6,9 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "host/ble_hs.h"
+#include "host/ble_hs_id.h"
 #include "host/util/util.h"
+#include "services/gap/ble_svc_gap.h"
 
 #define BLE_ECHO_TAG        "BLE_ECHO"
 #define BLE_ECHO_SVC_UUID   0xAB01
@@ -86,10 +88,49 @@ static esp_err_t echo_pre_enable(void)
     return ESP_OK;
 }
 
+static int echo_gap_event(struct ble_gap_event *event, void *arg)
+{
+    (void)event; (void)arg;
+    return 0;
+}
+
+/* BLE-only（无配网广播）时，由 echo 发起广播以便被发现 */
+#if !CONFIG_BLUFI_PROVISIONING_ENABLED
+static void echo_on_sync(void)
+{
+    struct ble_hs_adv_fields fields = {0};
+    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    fields.uuids16 = (ble_uuid16_t[]){ BLE_UUID16_INIT(BLE_ECHO_SVC_UUID) };
+    fields.num_uuids16 = 1;
+    const char *name = ble_svc_gap_device_name();
+    fields.name = (uint8_t *)name;
+    fields.name_len = strlen(name);
+    fields.name_is_complete = 1;
+    ble_gap_adv_set_fields(&fields);
+
+    uint8_t own_addr_type;
+    if (ble_hs_id_infer_auto(0, &own_addr_type) != 0) {
+        ESP_LOGW(BLE_ECHO_TAG, "cannot infer own addr type, skip advertising");
+        return;
+    }
+    struct ble_gap_adv_params adv_params = {
+        .conn_mode = BLE_GAP_CONN_MODE_UND,
+        .disc_mode = BLE_GAP_DISC_MODE_GEN,
+    };
+    ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &adv_params,
+                      echo_gap_event, NULL);
+    ESP_LOGI(BLE_ECHO_TAG, "advertising (BLE-only mode)");
+}
+#endif
+
 esp_err_t ble_echo_init(void)
 {
-    ESP_RETURN_ON_ERROR(ble_host_register_pre_enable(echo_pre_enable), BLE_ECHO_TAG,
-                        "ble_host pre-enable registration failed");
+    ESP_RETURN_ON_ERROR(ble_host_register_pre_enable("echo", echo_pre_enable),
+                        BLE_ECHO_TAG, "ble_host pre-enable registration failed");
+#if !CONFIG_BLUFI_PROVISIONING_ENABLED
+    ESP_RETURN_ON_ERROR(ble_host_register_on_sync("echo", echo_on_sync),
+                        BLE_ECHO_TAG, "ble_host on-sync registration failed");
+#endif
     ESP_LOGI(BLE_ECHO_TAG, "init OK (RX 0x%04x / TX 0x%04x)",
              BLE_ECHO_RX_UUID, BLE_ECHO_TX_UUID);
     return ESP_OK;

@@ -18,11 +18,11 @@ extern "C" {
  *   - on_sync 钩子在 host sync 之后执行（如 init profile、启动扫描）。
  */
 
-/** 注册一个 "enable 前" 钩子。返回非 OK 时 ble_host_init 会上报日志。 */
-esp_err_t ble_host_register_pre_enable(esp_err_t (*cb)(void));
+/** 注册一个 "enable 前" 钩子。name 用于诊断日志，返回非 OK 时 ble_host_init 会按名上报。 */
+esp_err_t ble_host_register_pre_enable(const char *name, esp_err_t (*cb)(void));
 
-/** 注册一个 "host sync 后" 钩子。 */
-esp_err_t ble_host_register_on_sync(void (*cb)(void));
+/** 注册一个 "host sync 后" 钩子。name 用于诊断日志。 */
+esp_err_t ble_host_register_on_sync(const char *name, void (*cb)(void));
 
 /** Caller-owned BLE host 策略，由 ble_host_init() 拷贝。 */
 typedef struct {
