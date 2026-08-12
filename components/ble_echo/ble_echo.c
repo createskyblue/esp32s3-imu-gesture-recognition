@@ -43,7 +43,10 @@ static int echo_access_cb(uint16_t conn_handle, uint16_t attr_handle,
         ESP_LOGI(BLE_ECHO_TAG, "RX→TX echoed %u bytes", len);
         struct os_mbuf *om = ble_hs_mbuf_from_flat(buf, len);
         if (om != NULL) {
-            ble_gatts_notify_custom(conn_handle, get_tx_handle(), om);
+            const int rc = ble_gatts_notify_custom(conn_handle, get_tx_handle(), om);
+            if (rc != 0) {
+                ESP_LOGW(BLE_ECHO_TAG, "notify failed: %d", rc);
+            }
         }
         return 0;
     }
@@ -64,7 +67,7 @@ static const struct ble_gatt_svc_def echo_svcs[] = {
             {
                 .uuid = BLE_UUID16_DECLARE(BLE_ECHO_TX_UUID),
                 .access_cb = echo_access_cb,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+                .flags = BLE_GATT_CHR_F_NOTIFY,
             },
             { 0 },
         },

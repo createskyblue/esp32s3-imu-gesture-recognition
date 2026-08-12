@@ -336,6 +336,23 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertIn("menuconfig BLE_ENABLED", kconfig)
         self.assertIn("menuconfig BLUFI_PROVISIONING_ENABLED", kconfig)
         self.assertIn("select BLE_ENABLED", kconfig)
+        # host 选择在 sdkconfig.defaults，不能 select choice 符号（no-op 警告）
+        self.assertNotIn("select BT_NIMBLE_ENABLED", kconfig)
+
+    def test_ble_echo_broadcast_is_ble_only_gated(self):
+        echo_source = (PROJECT_ROOT / "components" / "ble_echo" / "ble_echo.c").read_text(
+            encoding="utf-8"
+        )
+        host_source = (PROJECT_ROOT / "components" / "ble_host" / "ble_host.c").read_text(
+            encoding="utf-8"
+        )
+
+        # BLE-only（无配网）时 echo 才自行广播，不与 blufi 广播冲突
+        self.assertIn("CONFIG_BLUFI_PROVISIONING_ENABLED", echo_source)
+        self.assertIn("ble_gap_adv_start", echo_source)
+        # ble_host 统一补标准 GAP/GATT 服务（BLE-only 时缺 blufi 代调）
+        self.assertIn("ble_svc_gap_init", host_source)
+        self.assertIn("ble_svc_gatt_init", host_source)
 
     def test_defaults_do_not_enable_unused_runtime_features(self):
         defaults = (PROJECT_ROOT / "sdkconfig.defaults").read_text(

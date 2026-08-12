@@ -99,6 +99,10 @@ esp_err_t ble_host_init(const ble_host_config_t *config)
     ble_hs_cfg.sm_sc = 0;
     ble_store_config_init();
 
+    /* 标准 GAP/GATT 服务（默认由 blufi 代调；BLE-only 时由本组件补齐） */
+    ble_svc_gap_init();
+    ble_svc_gatt_init();
+
     /* 3. enable 前：各功能注册 GATT 服务 / 配置 host（NimBLE 要求 sync 前完成） */
     for (uint8_t i = 0; i < s_pre_enable_n; i++) {
         const esp_err_t err = s_pre_enable[i]();
