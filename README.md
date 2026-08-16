@@ -1,13 +1,20 @@
 # ESP32-S3 IMU 手势识别 边缘 AI Demo（嘉立创实战派）
 
-> 基于 **嘉立创实战派 ESP32-S3（LCKFB-SZPI-ESP32S3）** + 板载 **QMI8658 六轴 IMU** 的手势识别示例：
-> 按一次 **BOOT** 键采集 2 秒三轴加速度，屏幕实时显示波形，并可一键完成 **A / B / C** 三分类手势的实时推理。
->
+## 背景
+基于嘉立创实战派 ESP32‑S3 开发板与板载 QMI8658 六轴 IMU，本项目实现了一套端到端的 IMU 手势识别系统：采集 2 秒三轴加速度后，在设备端以纯 C 组件完成 A/B/C 三分类实时推理。AutoML 负责搜索网络方案，其输出为无法直接跑在 MCU 的黑盒模型，通过解析推理链路使用 C 语言重新实现推理；模型体积仅 3.1KB，采用静态内存设计、无动态分配，可运行于资源受限的边缘硬件。
+
 > - 项目仓库：[createskyblue/esp32s3-imu-gesture-recognition](https://github.com/createskyblue/esp32s3-imu-gesture-recognition)
 > - 演示视频：https://www.bilibili.com/video/BV1oSbX6DEbN
 > - 硬件文档：[立创实战派 ESP32-S3 Wiki](https://wiki.lckfb.com/zh-hans/szpi-esp32s3/)
-> - 起始模板：[createskyblue/esp32s3_idf_template](https://github.com/createskyblue/esp32s3_idf_template)
-> - 联系：createskyblue@outlook.com ／ 博客 https://createskyblue.github.io/
+
+
+## 技术亮点
+- **打通边缘AI全链路**：完成IMU数据采集、标注、模型方案搜索、ESP32‑S3固件部署；SD卡存储传感器数据，通过板载Web文件管理器导出数据，构建迭代闭环。
+- **推理逻辑C语言重实现**：AutoML 输出不可直接运行的信号处理 + SVM 黑盒方案；解析运算链路，纯 C 实现 STFT 特征提取与 SVM 分类推理；采用静态内存设计，无动态内存分配，产出跨平台算法库。
+- **端侧离线实时推理**：全部计算在ESP32‑S3本地执行，不依赖云端，适配离线低功耗边缘场景。
+- **小样本模型训练**：基于152条自建手势数据集实现A/B/C手势分类，在数据有限条件下达成识别效果。
+- **轻量化资源占用**：模型3.1KB，静态内存占用4B，适配MCU有限Flash/RAM，保证实时性。
+
 
 ## 目录
 - [效果演示](#效果演示)
