@@ -11,23 +11,12 @@
 #include <sys/stat.h>
 
 #include "app_storage.h"
-#if CONFIG_LED_TASK_ENABLE
-#include "led_task.h"
-#endif
 #include "lcd_lvgl.h"
 #include "gesture_demo.h"
 #include "sd_card.h"
 #include "web_platform.h"
 #include "wifi_config_store.h"
 #include "wifi_manager.h"
-#if CONFIG_BLE_ENABLED
-#include "ble_echo.h"
-#include "ble_host.h"
-#include "ble_host_test.h"
-#endif
-#if CONFIG_BLUFI_PROVISIONING_ENABLED
-#include "blufi_provisioning.h"
-#endif
 
 static const char *TAG = "MAIN";
 
@@ -46,19 +35,6 @@ static void build_default_ap_ssid(char *buf, size_t buf_size)
     }
     snprintf(buf, buf_size, "%s-%02X%02X%02X",
              DEFAULT_AP_SSID_BASE, mac[3], mac[4], mac[5]);
-}
-
-/* BLE 广播名必须短：蓝牙广播包 31 字节上限，长名字+服务 UUID 会超 → 广播失败。
- * WiFi AP 名可长（无此限制），这里用短版，仍按 MAC 唯一。 */
-static void build_ble_device_name(char *buf, size_t buf_size)
-{
-    uint8_t mac[6] = {0};
-    if (buf_size == 0u) return;
-    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
-        snprintf(buf, buf_size, "%s", "ESP32S3");
-        return;
-    }
-    snprintf(buf, buf_size, "ESP32S3-%02X%02X%02X", mac[3], mac[4], mac[5]);
 }
 
 
@@ -126,18 +102,6 @@ void app_main(void)
         ESP_LOGE(TAG, "Gesture demo start failed: %s", esp_err_to_name(gesture_err));
     }
 
-#if CONFIG_LED_TASK_ENABLE
-    /* 立创实战派无板载 LED，默认关闭；代码保留，menuconfig 开启 CONFIG_LED_TASK_ENABLE 后启用 */
-    ESP_ERROR_CHECK(led_task_init());
-    const led_cmd_t heartbeat = {
-        .led = LED_GREEN,
-        .type = LED_CMD_BLINK,
-        .period_ms = 500u,
-        .on_ms = 250u,
-    };
-    led_send_cmd(&heartbeat);
-#endif
-
     /* Set timezone to UTC+8 (China Standard Time) */
     setenv("TZ", "CST-8", 1);
     tzset();
@@ -189,46 +153,11 @@ void app_main(void)
         if (!wifi_manager_is_started()) {
             ESP_LOGE(TAG, "WiFi initialization failed: %s",
                      esp_err_to_name(wifi_err));
-#if CONFIG_LED_TASK_ENABLE
-            led_fatal_error();
-#endif
             return;
         }
         ESP_LOGW(TAG, "WiFi initialization incomplete: %s; provisioning AP remains active",
                  esp_err_to_name(wifi_err));
     }
-
-    /* ── BLE：各功能向 ble_host 注册钩子，再统一拉起 host ── */
-    /* 开关见 main/Kconfig.projbuild：BLE_ENABLED（总开关）+ BLUFI_PROVISIONING_ENABLED（配网）。 */
-#if CONFIG_BLE_ENABLED
-#if CONFIG_BLUFI_PROVISIONING_ENABLED
-    blufi_provisioning_config_t blufi_cfg = {
-        .apply_credentials = wifi_config_store_apply_credentials,
-    };
-    esp_err_t blufi_err = blufi_provisioning_init(&blufi_cfg);
-    if (blufi_err != ESP_OK) {
-        ESP_LOGW(TAG, "BluFi provisioning init failed: %s; BLE 配网不可用",
-                 esp_err_to_name(blufi_err));
-    }
-#endif
-    /* BLE echo 示例：演示挂载自定义 GATT 服务 */
-    if (ble_echo_init() != ESP_OK) {
-        ESP_LOGW(TAG, "BLE echo init failed");
-    }
-    /* BLE 主机测试：扫描睡眠垫(NUS) → 连接 → 订阅 → 打印数据 */
-    if (ble_host_test_init() != ESP_OK) {
-        ESP_LOGW(TAG, "BLE host test init failed");
-    }
-
-    /* 统一拉起 BLE host（触发上面注册的各钩子） */
-    ble_host_config_t host_cfg = {0};
-    /* BLE 广播名用短版（31 字节广播包限制），仍按 MAC 唯一 */
-    build_ble_device_name(host_cfg.device_name, sizeof(host_cfg.device_name));
-    esp_err_t host_err = ble_host_init(&host_cfg);
-    if (host_err != ESP_OK) {
-        ESP_LOGW(TAG, "BLE host init failed: %s", esp_err_to_name(host_err));
-    }
-#endif
 
     /* ── 平台基础 Web 服务（HTTP + OTA + 文件管理） ───────── */
     ESP_ERROR_CHECK(web_platform_init());

@@ -84,8 +84,8 @@ static bool resolve_static_path(const char *uri, char *path, size_t path_size)
     return length >= 0 && (size_t)length < path_size;
 }
 
-/* Public helpers kept for custom handlers (see hello_web); delegate to the
- * shared json_http helpers so behavior stays consistent across components. */
+/* Public helpers kept for custom handlers; delegate to the shared json_http
+ * helpers so behavior stays consistent across components. */
 esp_err_t send_json_text(httpd_req_t *req, const char *json)
 {
     return json_send_text(req, json);
