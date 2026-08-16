@@ -16,6 +16,7 @@
 #include "esp_private/esp_clk.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lvgl.h"
 
@@ -75,6 +76,11 @@ static const char *TAG = "LCD_LVGL";
 static i2c_master_bus_handle_t s_i2c_bus = NULL;
 static i2c_master_dev_handle_t s_pca9557_dev = NULL;
 static esp_lcd_panel_handle_t s_panel = NULL;
+static esp_lcd_panel_io_handle_t s_io = NULL;
+
+/* Posted from the esp_lcd DMA-done callback so lcd_flush_wait_cb() can
+ * block (instead of LVGL's default busy-loop) while a frame is draining. */
+static SemaphoreHandle_t s_flush_done = NULL;
 
 #if CONFIG_LCD_LVGL_BENCHMARK
 /* Raw SPI throughput benchmark (heap buffers, bypasses LVGL). */
@@ -113,10 +119,13 @@ static void raw_spi_benchmark(void)
 }
 #endif /* CONFIG_LCD_LVGL_BENCHMARK */
 
+
+#if CONFIG_LCD_LVGL_BENCHMARK
 /* Full-screen refresh benchmark counters (updated from flush callback) */
 static uint64_t s_flush_bytes = 0;
 static uint64_t s_flush_us = 0;
 static uint32_t s_flush_count = 0;
+#endif /* CONFIG_LCD_LVGL_BENCHMARK */
 
 /* ═══════════════ I2C (new driver API) ═══════════════ */
 
@@ -254,11 +263,10 @@ static esp_err_t lcd_panel_init(void)
         .flags.psram_dma_direct = true,
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
-        .on_color_trans_done = NULL,
-        .user_ctx = NULL,
     };
     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi(LCD_SPI_HOST, &io_cfg, &io),
                         TAG, "New SPI panel IO failed");
+    s_io = io;   /* keep handle: register the DMA-done callback after LVGL init */
 
     const esp_lcd_panel_dev_config_t panel_cfg = {
         .reset_gpio_num = LCD_PIN_RST,
@@ -293,39 +301,91 @@ static uint32_t lv_tick_get_ms(void)
     return (uint32_t)(esp_timer_get_time() / 1000ULL);
 }
 
+/* Called from the esp_lcd SPI task once GDMA has really finished sending the
+ * frame. Only then is it safe for LVGL to reuse the draw buffer — the flush
+ * callback itself only queues an async SPI transaction. */
+static bool lcd_flush_ready_cb(esp_lcd_panel_io_handle_t io,
+                               esp_lcd_panel_io_event_data_t *edata,
+                               void *user_ctx)
+{
+    (void)io;
+    (void)edata;
+    lv_display_t *disp = (lv_display_t *)user_ctx;
+    lv_display_flush_ready(disp);
+    if (s_flush_done != NULL) {
+        xSemaphoreGive(s_flush_done);
+    }
+    return true;
+}
+
+/* LVGL calls this instead of its default `while (disp->flushing);` busy
+ * loop. We block on the DMA-done semaphore, so the display task sleeps
+ * (0% CPU) instead of spinning while a frame is being pushed to the panel. */
+static void lcd_flush_wait_cb(lv_display_t *disp)
+{
+    (void)disp;
+    if (s_flush_done != NULL) {
+        xSemaphoreTake(s_flush_done, pdMS_TO_TICKS(100));
+    }
+}
+
 static void lcd_flush_cb(lv_display_t *disp, const lv_area_t *area,
                          uint8_t *px_map)
 {
+    (void)disp;
     /* LVGL renders directly in RGB565_SWAPPED (big-endian byte order) to
      * match the ST7789, so the buffer is handed to esp_lcd as-is, zero-copy. */
+#if CONFIG_LCD_LVGL_BENCHMARK
     const size_t count = (size_t)(area->x2 - area->x1 + 1) *
                          (size_t)(area->y2 - area->y1 + 1);
-
     const uint64_t flush_t0 = esp_timer_get_time();
+#endif
+    /* Queue the frame: DMA reads it from PSRAM while LVGL renders the next
+     * one; lv_display_flush_ready() fires from lcd_flush_ready_cb(). */
     esp_lcd_panel_draw_bitmap(s_panel, area->x1, area->y1,
                               area->x2 + 1, area->y2 + 1, px_map);
+#if CONFIG_LCD_LVGL_BENCHMARK
     s_flush_bytes += (uint64_t)count * sizeof(uint16_t);
     s_flush_us += esp_timer_get_time() - flush_t0;
     s_flush_count++;
-    lv_display_flush_ready(disp);
+#endif
+}
+
+/* Full-screen HSV demo: the whole panel cycles through the hue wheel together
+ * (with a gentle brightness breathing). Only the screen background color
+ * changes, so LVGL renders it with a fast fill (no per-pixel canvas work) ?
+ * that keeps CPU low and lets the real ~60 fps show in LVGL's built-in
+ * performance monitor (top-left "FPS/CPU" window). */
+static lv_obj_t *s_demo_screen = NULL;
+
+static void demo_hsv_timer_cb(lv_timer_t *timer)
+{
+    static uint32_t tick = 0;
+
+    /* Whole panel shares one hue; full 360deg cycle every ~12 s at 60 fps. */
+    const uint16_t hue = (uint16_t)((tick / 2u) % 360u);
+    /* Brightness breathes ~199..255 so colors stay vivid, never grey. */
+    const uint8_t value = (uint8_t)(227 + (28 * lv_trigo_sin((int16_t)((tick * 3) % 3600)) / 1000));
+
+    lv_obj_set_style_bg_color(s_demo_screen, lv_color_hsv_to_rgb(hue, 255, value), 0);
+    lv_obj_invalidate(s_demo_screen);
+
+    tick++;
+    (void)timer;
 }
 
 static void demo_screen_create(void)
 {
-    lv_obj_t *scr = lv_scr_act();
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x002244), 0);
-
-    lv_obj_t *label = lv_label_create(scr);
-    lv_label_set_text(label, "LCKFB ESP32-S3\nLVGL 9.5.0");
-    lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_center(label);
+    s_demo_screen = lv_scr_act();
+    lv_obj_set_style_bg_color(s_demo_screen, lv_color_hex(0x000000), 0);
+    lv_timer_t *t = lv_timer_create(demo_hsv_timer_cb, 16, NULL);
+    lv_timer_ready(t);   /* paint the first frame immediately */
 }
 
 #if CONFIG_LCD_LVGL_BENCHMARK
 /* Full-screen refresh benchmark: force whole-screen redraws and measure
- * frames-per-second (render + byte swap + SPI transfer) plus the raw
- * SPI flush throughput to the panel. */
+ * frames-per-second (render + SPI transfer) plus the raw SPI flush
+ * throughput to the panel. */
 static void run_fullscreen_benchmark(void)
 {
     const int frames = 30;
@@ -388,7 +448,7 @@ static void display_task(void *arg)
         return;
     }
 
-    /* Two partial draw buffers; location is a Kconfig switch
+    /* Two full-frame draw buffers; location is a Kconfig switch
      * (LCD_LVGL_BUF_IN_PSRAM) so DRAM vs PSRAM refresh can be compared. */
 #if CONFIG_LCD_LVGL_BUF_IN_PSRAM
     uint32_t buf_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
@@ -414,6 +474,23 @@ static void display_task(void *arg)
      * removes the per-pixel byte-swap loop in the flush callback. */
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565_SWAPPED);
     lv_display_set_flush_cb(disp, lcd_flush_cb);
+    s_flush_done = xSemaphoreCreateBinary();
+    if (s_flush_done == NULL) {
+        ESP_LOGE(TAG, "Failed to create flush semaphore");
+    }
+    lv_display_set_flush_wait_cb(disp, lcd_flush_wait_cb);
+
+    /* Flush is async: only release the LVGL draw buffer when the transfer
+     * has actually finished (on_color_trans_done), never before. */
+    const esp_lcd_panel_io_callbacks_t cbs = {
+        .on_color_trans_done = lcd_flush_ready_cb,
+    };
+    esp_err_t cb_err = esp_lcd_panel_io_register_event_callbacks(s_io, &cbs, disp);
+    if (cb_err != ESP_OK) {
+        ESP_LOGE(TAG, "Register panel-io callback failed: %s",
+                 esp_err_to_name(cb_err));
+    }
+
     lv_display_set_buffers(disp, buf1, buf2, LCD_BUFFER_BYTES,
                            LV_DISPLAY_RENDER_MODE_PARTIAL);
 
@@ -425,8 +502,14 @@ static void display_task(void *arg)
     run_fullscreen_benchmark();
 #endif
     while (1) {
-        lv_timer_handler();
-        vTaskDelay(pdMS_TO_TICKS(DISPLAY_REFRESH_MS));
+        uint32_t time_till_next = lv_timer_handler();
+        /* Sleep until the next LVGL timer is due instead of polling every
+         * DISPLAY_REFRESH_MS. lv_timer_handler() returns ms until the next
+         * due timer; cap it so we stay responsive. */
+        if (time_till_next > DISPLAY_REFRESH_MS) {
+            time_till_next = DISPLAY_REFRESH_MS;
+        }
+        vTaskDelay(pdMS_TO_TICKS(time_till_next));
     }
 }
 
