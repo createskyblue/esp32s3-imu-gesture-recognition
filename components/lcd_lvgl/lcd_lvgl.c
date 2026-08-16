@@ -70,6 +70,11 @@ static i2c_master_bus_handle_t s_i2c_bus = NULL;
 static i2c_master_dev_handle_t s_pca9557_dev = NULL;
 static esp_lcd_panel_handle_t s_panel = NULL;
 
+/* Full-screen refresh benchmark counters (updated from flush callback) */
+static uint64_t s_flush_bytes = 0;
+static uint64_t s_flush_us = 0;
+static uint32_t s_flush_count = 0;
+
 /* ═══════════════ I2C (new driver API) ═══════════════ */
 
 static esp_err_t bsp_i2c_init(void)
@@ -198,7 +203,7 @@ static esp_err_t lcd_panel_init(void)
         .dc_gpio_num = LCD_PIN_DC,
         .spi_mode = 2,                   /* board wiring uses SPI mode 2 */
         .pclk_hz = LCD_PIXEL_CLOCK_HZ,
-        .trans_queue_depth = 10,
+        .trans_queue_depth = 1,   /* synchronous flush: benchmark measures real SPI time */
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
         .on_color_trans_done = NULL,
@@ -253,8 +258,12 @@ static void lcd_flush_cb(lv_display_t *disp, const lv_area_t *area,
         pixels[i] = (uint16_t)((p >> 8) | (p << 8));
     }
 
+    const uint64_t flush_t0 = esp_timer_get_time();
     esp_lcd_panel_draw_bitmap(s_panel, area->x1, area->y1,
                               area->x2 + 1, area->y2 + 1, px_map);
+    s_flush_bytes += (uint64_t)count * sizeof(uint16_t);
+    s_flush_us += esp_timer_get_time() - flush_t0;
+    s_flush_count++;
     lv_display_flush_ready(disp);
 }
 
@@ -270,6 +279,52 @@ static void demo_screen_create(void)
     lv_obj_center(label);
 }
 
+/* Full-screen refresh benchmark: force whole-screen redraws and measure
+ * frames-per-second (render + byte swap + SPI transfer) plus the raw
+ * SPI flush throughput to the panel. */
+static void run_fullscreen_benchmark(void)
+{
+    const int frames = 30;
+    lv_obj_t *scr = lv_scr_act();
+
+    /* Warm-up: one full frame so renderer/caches are ready. */
+    lv_obj_invalidate(scr);
+    lv_timer_handler();
+
+    const uint32_t flushes0 = s_flush_count;
+    const uint64_t flush_us0 = s_flush_us;
+    const uint64_t flush_bytes0 = s_flush_bytes;
+
+    lv_timer_t *refr = lv_display_get_refr_timer(lv_display_get_default());
+
+    const uint64_t t0 = esp_timer_get_time();
+    for (int i = 0; i < frames; i++) {
+        /* Cycle the full-screen background so every pixel is rewritten. */
+        const uint32_t color = 0x000000u | ((uint32_t)(i & 7) << 5);
+        lv_obj_set_style_bg_color(scr, lv_color_hex(color), 0);
+        lv_obj_invalidate(scr);
+        /* LVGL 9: refresh timer pauses itself after each run; force it due
+         * so every loop iteration really redraws the whole screen. */
+        lv_timer_ready(refr);
+        lv_timer_handler();
+    }
+    const uint64_t t1 = esp_timer_get_time();
+
+    const uint64_t elapsed_us = (uint64_t)(t1 - t0);
+    const double frame_ms = (double)elapsed_us / 1000.0 / (double)frames;
+    const double fps = 1000.0 / frame_ms;
+
+    const uint32_t flushes = s_flush_count - flushes0;
+    const uint64_t flush_us = s_flush_us - flush_us0;
+    const uint64_t flush_bytes = s_flush_bytes - flush_bytes0;
+    const double mbps = (double)flush_bytes / ((double)flush_us / 1e6) / 1e6;
+
+    ESP_LOGI(TAG, "FULLSCREEN refresh: %.2f fps (%.3f ms/frame, %d frames, %dx%d)",
+             fps, frame_ms, frames, LCD_H_RES, LCD_V_RES);
+    ESP_LOGI(TAG, "FULLSCREEN flush: %u partial flushes (%llu B), %.2f MB/s to panel",
+             flushes, (unsigned long long)flush_bytes, mbps);
+}
+
 static void display_task(void *arg)
 {
     (void)arg;
@@ -282,24 +337,23 @@ static void display_task(void *arg)
         return;
     }
 
-    /* Two partial draw buffers; prefer PSRAM, fall back to internal RAM. */
-    uint8_t *buf1 = heap_caps_malloc(LCD_BUFFER_BYTES,
-                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    uint8_t *buf2 = heap_caps_malloc(LCD_BUFFER_BYTES,
-                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (buf1 == NULL) {
-        buf1 = heap_caps_malloc(LCD_BUFFER_BYTES,
-                                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    }
-    if (buf2 == NULL) {
-        buf2 = heap_caps_malloc(LCD_BUFFER_BYTES,
-                                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    }
+    /* Two partial draw buffers; location is a Kconfig switch
+     * (LCD_LVGL_BUF_IN_PSRAM) so DRAM vs PSRAM refresh can be compared. */
+#if CONFIG_LCD_LVGL_BUF_IN_PSRAM
+    uint32_t buf_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#else
+    uint32_t buf_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+#endif
+    uint8_t *buf1 = heap_caps_malloc(LCD_BUFFER_BYTES, buf_caps);
+    uint8_t *buf2 = heap_caps_malloc(LCD_BUFFER_BYTES, buf_caps);
     if (buf1 == NULL || buf2 == NULL) {
         ESP_LOGE(TAG, "Not enough memory for LVGL draw buffers");
         vTaskDelete(NULL);
         return;
     }
+    ESP_LOGI(TAG, "LVGL buffers in %s: buf1=%p buf2=%p (%u B each)",
+             (buf_caps & MALLOC_CAP_SPIRAM) ? "PSRAM" : "DRAM",
+             buf1, buf2, (unsigned)LCD_BUFFER_BYTES);
 
     lv_init();
     lv_tick_set_cb(lv_tick_get_ms);
@@ -312,6 +366,7 @@ static void display_task(void *arg)
     demo_screen_create();
 
     ESP_LOGI(TAG, "display task started");
+    run_fullscreen_benchmark();
     while (1) {
         lv_timer_handler();
         vTaskDelay(pdMS_TO_TICKS(DISPLAY_REFRESH_MS));
