@@ -1,10 +1,11 @@
 # ESP32-S3 IMU 手势识别 边缘AI Demo（嘉立创实战派）
 
-> 项目仓库：[createskyblue/esp32s3-imu-gesture-recognition](https://github.com/createskyblue/esp32s3-imu-gesture-recognition)
 
 基于 **嘉立创实战派 ESP32-S3（LCKFB-SZPI-ESP32S3）** + 板载 **QMI8658 IMU** 的手势识别示例：
 按一次 BOOT 按键采集 2 秒三轴加速度，屏幕实时显示波形，并可一键完成 A/B/C 三轴手势的实时推理。
 
+> 项目仓库：[createskyblue/esp32s3-imu-gesture-recognition](https://github.com/createskyblue/esp32s3-imu-gesture-recognition)
+>
 > 官方硬件文档：[立创实战派 ESP32-S3 Wiki](https://wiki.lckfb.com/zh-hans/szpi-esp32s3/) 
 >
 > 项目起始模板：[createskyblue/esp32s3_idf_template](https://github.com/createskyblue/esp32s3_idf_template)
@@ -34,16 +35,18 @@
 
 ## 开发流程
 
-1. **手势数据采集**：QMI8658 加速度计 ±4 g / 50 Hz 采样，单次 2 秒（100 样本 × 3 轴），
-   按 A/B/C 分类追加写入 SD 卡 CSV（三轴交错存储，参考 Nano Edge AI 格式）。
+1. **手势数据采集**：QMI8658 加速度计 ±4 g 量程，软件 50 Hz 采样（传感器内部 ODR 250 Hz，按 20 ms 定时读取），单次 2 秒（100 样本 × 3 轴），
+   按 A/B/C 分类追加写入 SD 卡 CSV（三轴交错存储，参考 Nano Edge AI 格式）。原始训练数据集见仓库根目录 `dataset/`（A/B/C 各 50/50/52 条，共 152 条）。
    ![采集的 CSV 可通过在线文件面板访问](img/采集到的数据保存到SD卡可通过在线面板访问.jpg)
-2. **数据清洗**：去趋势（逐轴减去窗口均值）、剔除异常/丢失样本，统一量纲到 g。
-3. **数据增强**：Hann 加窗 + 64 点 STFT 滑窗（偏移 0/36），扩展频谱特征并抑制频谱泄漏。
-4. **特征筛选**：每轴取 FFT 幅度谱 bin 1..32（去 DC），每窗 64 维、三轴共 **192 维**特征。
+2. **数据清洗**：去趋势（逐轴减去窗口均值）、统一量纲到 g；采集阶段人工剔除异常/丢失样本。
+3. **特征提取**：Hann 加窗 + 64 点 STFT 滑窗（偏移 0/36），扩展频谱特征并抑制频谱泄漏。
+4. **特征组装**：每轴取 FFT 幅度谱 bin 1..32（去直流），每窗 32 维、每轴 2 窗共 64 维、三轴共 **192 维**特征。
 5. **模型基准测试**：在线性 SVM、浅层网络等候选结构上对比精度/体积/算力，选定
-   「线性 one-vs-rest SVM + 温度缩放 Softmax」（3×192 系数 ≈ 3 KB，训练集 100% 正确）。
+   「线性 one-vs-rest SVM + Softmax（缩放系数 β=5.0）」（3×192 权重 = 576 个 float ≈ 2.3 KB，含窗函数/FFT 系数等常量表共约 3.1 KB；训练集 152/152 正确 = 100%）。
 6. **部署**：模型常量（窗函数、FFT 系数、SVM 权重）固化为 `gesture_classifier_model.h`，
    以纯 C 组件移植到 ESP32-S3，无动态分配，直接调用。
+
+> **关于准确率**：152/152（100%）是训练集（建模所用的 A/B/C 各 50/50/52 条样本）上的结果；参考模型的交叉验证 KPI 约 0.97，更接近真实场景的预期，且目前尚未做留出集或真机实时评估，泛化能力需用新采集数据验证。
 
 ## 推理结构
 
@@ -57,12 +60,12 @@
   │                        → 取幅度谱 bin 1..32，×1/16 归一化 → 每轴 64 维
   ├─ 3. 特征交错 Interleave 192 维特征按 特征优先/轴交错 排列：feat[f*3+c]
   ├─ 4. 线性 SVM           3 组 one-vs-rest 权重（3×192 + 3 截距）→ 3 个分数
-  └─ 5. Softmax + Argmax   温度 β=5.0 缩放后 softmax → 概率 + 类别
+  └─ 5. Softmax + Argmax   缩放系数 β=5.0 的 softmax → 概率 + 类别
                            类 id：0=C, 1=B, 2=A
 ```
 
 - **实时性**：50 Hz 采集 2 秒 → 分类计算毫秒级完成；结果以**彩色半透明大字**叠加到图表右下角（A=红 / B=绿 / C=蓝）。
-- **资源占用**：零动态分配，峰值栈约 4–5 KB，模型常量存 Flash 约 3 KB。
+- **资源占用**：零动态分配（静态变量仅 4 B）；峰值栈约 4–5 KB（按输入/特征/FFT 缓冲估算，建议用高水位 API 实测）；模型常量表存 Flash 约 3.1 KB（ESP32-S3 实测 `.rodata` ≈ 3.1 KB、代码 ≈ 1 KB）。
 - **交互**：`Infer` 按钮切换推理模式，物理 `BOOT` 按键触发采样；`A/B/C` 按钮切换 CSV 标注模式。
 
 | 推理 A（红） | 推理 B（绿） | 推理 C（蓝） |
