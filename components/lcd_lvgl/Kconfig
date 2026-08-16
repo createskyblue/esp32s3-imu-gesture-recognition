@@ -4,8 +4,16 @@ config LCD_LVGL_BUF_IN_PSRAM
     bool "LVGL draw buffers in PSRAM (else internal DRAM)"
     default y
     help
-        Benchmark switch: y = PSRAM buffers (keeps internal RAM free),
-        n = internal DRAM buffers. The display task logs the buffer
-        location and a full-screen refresh benchmark at startup.
+        y = PSRAM buffers (keeps internal RAM free; required for the
+        full-frame 240-row buffers used for 60 fps),
+        n = internal DRAM buffers (only fits smaller row counts).
+
+config LCD_LVGL_BENCHMARK
+    bool "Run full-screen refresh + raw SPI benchmarks at startup"
+    default n
+    help
+        When enabled, the display task prints RAW SPI throughput and a
+        forced 30-frame full-screen refresh benchmark to the serial log
+        at boot. Disable for normal operation.
 
 endmenu
