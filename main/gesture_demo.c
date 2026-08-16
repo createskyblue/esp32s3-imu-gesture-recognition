@@ -18,6 +18,7 @@
 
 #include "lcd_lvgl.h"
 #include "qmi8658.h"
+#include "gesture_classifier.h"
 #include <dirent.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -56,6 +57,9 @@
 #define UI_BTN_H           52
 #define UI_BTN_W           80
 
+/* 推理输入：100 样本 × 3 轴交错（与 CSV 行格式一致，单位 g） */
+#define INFER_AXES         3
+
 typedef enum {
     GESTURE_A = 0,
     GESTURE_B,
@@ -74,6 +78,10 @@ static volatile bool s_capture_busy = false;   /* 正在采样中 */
 static SemaphoreHandle_t s_samples_mutex = NULL;
 
 static volatile int s_selected = GESTURE_A;    /* 当前选中的手势按钮 */
+/* 推理模式：Infer 按钮切换；开启后 BOOT 采样的结果交给分类器（不写 CSV） */
+static volatile bool s_infer_mode = false;     /* 推理模式（A/B/C 按钮退出） */
+static volatile bool s_infer_done = false;     /* 推理完成待 UI 取走 */
+static volatile int  s_infer_result = -1;      /* 类 id：0=C,1=B,2=A；-1=失败 */
 static int s_file_lines[GESTURE_COUNT] = {0, 0, 0};
 static int32_t s_boot_count = 1;
 static char s_csv_path[GESTURE_COUNT][64];
@@ -89,6 +97,7 @@ static lv_obj_t *s_status_label = NULL;
 static lv_obj_t *s_btn[3];
 static lv_obj_t *s_btn_label[3];
 static lv_obj_t *s_btn_infer = NULL;
+static lv_obj_t *s_infer_overlay = NULL;       /* 图表区域叠加的半透明结果字母 */
 /* 截图：LVGL 任务取快照入队，写卡任务编码 BMP 存 SD（写卡不阻塞 UI） */
 typedef struct {
     void       *buf;      /* RGB565 快照数据（PSRAM） */
@@ -227,7 +236,8 @@ static void boot_btn_init(void)
 }
 
 /* ═════════════════════════════ 采集任务 ═════════════════════════════
- * 只做：等按键 → 50Hz 采 2s → 写 CSV → 发布数据给 UI。不碰任何 LVGL 对象。
+ * 只做：等 BOOT 按键 → 50Hz 采 2s → 按模式（写 CSV / 推理）→ 发布数据给 UI。
+ * 不碰任何 LVGL 对象。推理是模式（Infer 按钮切换），物理 BOOT 按键始终是采样触发源。
  */
 
 static void capture_task(void *arg)
@@ -252,6 +262,7 @@ static void capture_task(void *arg)
 
         s_capture_busy = true;
         ESP_LOGI(TAG, "capturing 2s @ 50Hz (100 samples)...");
+        const bool do_infer = s_infer_mode;    /* 采集开始时定格模式 */
 
         /* vTaskDelayUntil 保证精确 20ms 采样间隔（50Hz） */
         TickType_t last = xTaskGetTickCount();
@@ -262,19 +273,49 @@ static void capture_task(void *arg)
             vTaskDelayUntil(&last, pdMS_TO_TICKS(SAMPLE_PERIOD_MS));
         }
 
-        const int sel = s_selected;
-        append_csv_row(sel, tmp, SAMPLE_COUNT);
-        s_file_lines[sel]++;
+        if (do_infer) {
+            /* 推理：交错 float in[300]（单位 g），完成后不写 CSV */
+            float in[SAMPLE_COUNT * INFER_AXES];
+            float probs[INFER_AXES];
+            int id = -1;
+            for (int i = 0; i < SAMPLE_COUNT; i++) {
+                in[i * 3 + 0] = qmi8658_raw_to_g(tmp[i].acc_x);
+                in[i * 3 + 1] = qmi8658_raw_to_g(tmp[i].acc_y);
+                in[i * 3 + 2] = qmi8658_raw_to_g(tmp[i].acc_z);
+            }
+            if (gc_classification(in, probs, &id) == GC_OK && id >= 0 && id < INFER_AXES) {
+                ESP_LOGI(TAG, "infer -> %s (prob %.3f)",
+                         gc_get_class_name(id), (double)probs[id]);
+            } else {
+                id = -1;
+                ESP_LOGE(TAG, "gc_classification failed");
+            }
 
-        /* 发布给 UI（互斥锁内一次性拷贝 + 置完成标志） */
-        if (s_samples_mutex != NULL &&
-            xSemaphoreTake(s_samples_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-            memcpy(s_samples, tmp, sizeof(s_samples));
-            s_capture_done = true;
-            xSemaphoreGive(s_samples_mutex);
+            /* 发布给 UI（互斥锁内一次性拷贝 + 置完成标志；同时发布波形供图表显示） */
+            if (s_samples_mutex != NULL &&
+                xSemaphoreTake(s_samples_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                s_infer_result = id;
+                s_infer_done = true;
+                memcpy(s_samples, tmp, sizeof(s_samples));
+                s_capture_done = true;
+                xSemaphoreGive(s_samples_mutex);
+            }
+            ESP_LOGI(TAG, "inference done");
+        } else {
+            const int sel = s_selected;
+            append_csv_row(sel, tmp, SAMPLE_COUNT);
+            s_file_lines[sel]++;
+
+            /* 发布给 UI（互斥锁内一次性拷贝 + 置完成标志） */
+            if (s_samples_mutex != NULL &&
+                xSemaphoreTake(s_samples_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                memcpy(s_samples, tmp, sizeof(s_samples));
+                s_capture_done = true;
+                xSemaphoreGive(s_samples_mutex);
+            }
+            ESP_LOGI(TAG, "capture done");
         }
         s_capture_busy = false;
-        ESP_LOGI(TAG, "capture done");
     }
 }
 
@@ -450,24 +491,37 @@ static void btn_event_cb(lv_event_t *e)
 {
     const int id = (int)(intptr_t)lv_event_get_user_data(e);
 
-    if (id < GESTURE_COUNT) {           /* A / B / C：单选，切换高亮 */
+    if (id < GESTURE_COUNT) {           /* A / B / C：选 CSV 手势类别，退出推理模式 */
+        s_infer_mode = false;
+        lv_obj_add_flag(s_infer_overlay, LV_OBJ_FLAG_HIDDEN);
         s_selected = id;
         for (int i = 0; i < GESTURE_COUNT; i++) {
             lv_obj_set_style_bg_color(s_btn[i],
                                       (i == id) ? lv_color_hex(0x0060A0) : lv_color_hex(0x30343A),
                                       0);
         }
+        lv_obj_set_style_bg_color(s_btn_infer, lv_color_hex(0x503000), 0);   /* 取消推理高亮 */
         lv_label_set_text(s_status_label, "Ready");
-    } else {                            /* 推理：占位，后续实现 */
-        lv_label_set_text(s_status_label, "Infer: reserved");
+    } else {                            /* 推理：切换为推理模式，BOOT 按键触发采样（不写 CSV） */
+        s_infer_mode = true;
+        s_infer_done = false;
+        s_infer_result = -1;
+        lv_obj_add_flag(s_infer_overlay, LV_OBJ_FLAG_HIDDEN);
+        for (int i = 0; i < GESTURE_COUNT; i++) {
+            lv_obj_set_style_bg_color(s_btn[i], lv_color_hex(0x30343A), 0);
+        }
+        lv_obj_set_style_bg_color(s_btn_infer, lv_color_hex(0x0060A0), 0);   /* 高亮推理 */
+        lv_label_set_text(s_status_label, "Infer: press BOOT");
     }
 }
 
 static void ui_timer_cb(lv_timer_t *timer)
 {
     bool have_new = false;
+    bool infer_new = false;
+    int  infer_id = -1;
 
-    /* 取走最新一次采集结果（只拷贝，不做 LVGL 调用，锁内停留极短） */
+    /* 取走最新一次采集/推理结果（只拷贝，不做 LVGL 调用，锁内停留极短） */
     if (s_samples_mutex != NULL && xSemaphoreTake(s_samples_mutex, 0) == pdTRUE) {
         if (s_capture_done) {
             for (int ax = 0; ax < 3; ax++) {
@@ -480,6 +534,11 @@ static void ui_timer_cb(lv_timer_t *timer)
             }
             s_capture_done = false;
             have_new = true;
+        }
+        if (s_infer_done) {
+            s_infer_done = false;
+            infer_id = s_infer_result;
+            infer_new = true;
         }
         xSemaphoreGive(s_samples_mutex);
     }
@@ -501,15 +560,37 @@ static void ui_timer_cb(lv_timer_t *timer)
             lv_label_set_text(s_mm_label[ax], buf);
         }
 
-        /* 按钮行数标签 + 状态 */
-        char lbl[16];
-        snprintf(lbl, sizeof(lbl), "%c:%d", 'A' + s_selected, s_file_lines[s_selected]);
-        lv_label_set_text(s_btn_label[s_selected], lbl);
-        lv_label_set_text(s_status_label, "Saved to SD");
+        /* 按钮行数标签 + 状态（推理模式不写 CSV，行数不变） */
+        if (!infer_new) {
+            char lbl[16];
+            snprintf(lbl, sizeof(lbl), "%c:%d", 'A' + s_selected, s_file_lines[s_selected]);
+            lv_label_set_text(s_btn_label[s_selected], lbl);
+            lv_label_set_text(s_status_label, s_infer_mode ? "Inferring..." : "Saved to SD");
+        }
     } else if (s_capture_busy) {
-        lv_label_set_text(s_status_label, "Sampling...");
-    } else if (strcmp(lv_label_get_text(s_status_label), "Sampling...") == 0) {
+        lv_label_set_text(s_status_label, s_infer_mode ? "Inferring..." : "Sampling...");
+    } else if (strcmp(lv_label_get_text(s_status_label), "Sampling...") == 0 ||
+               strcmp(lv_label_get_text(s_status_label), "Inferring...") == 0) {
         lv_label_set_text(s_status_label, "Ready");
+    }
+
+    /* 推理结果：大字透明字母叠加到图表区域（类 id：0=C,1=B,2=A）。
+     * 结果只在图表上显示，右侧面板只给中性状态，不显示识别结果。 */
+    if (infer_new) {
+        if (infer_id >= 0 && infer_id < INFER_AXES) {
+            static const char *letters[INFER_AXES] = { "C", "B", "A" };
+            lv_label_set_text(s_infer_overlay, letters[infer_id]);
+            lv_obj_update_layout(s_infer_overlay);      /* 先算好内容尺寸 */
+            lv_obj_set_style_transform_pivot_x(s_infer_overlay,
+                                               lv_obj_get_width(s_infer_overlay) / 2, 0);
+            lv_obj_set_style_transform_pivot_y(s_infer_overlay,
+                                               lv_obj_get_height(s_infer_overlay) / 2, 0);
+            lv_obj_set_style_transform_scale(s_infer_overlay, 512, 0);  /* 2x 放大 */
+            lv_obj_clear_flag(s_infer_overlay, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(s_status_label, "Infer done");
+        } else {
+            lv_label_set_text(s_status_label, "Infer: failed");
+        }
     }
 
     /* 截图保存结果提示（写卡任务回填，与采集状态互不覆盖） */
@@ -552,6 +633,15 @@ void gesture_demo_ui_create(void)
 
     /* 点击图表 → 屏幕截图保存到 SD 卡 */
     lv_obj_add_event_cb(s_chart, chart_event_cb, LV_EVENT_CLICKED, NULL);
+
+    /* 推理结果叠加层：图表区域内居中、半透明大字母（默认隐藏；label 不可点击，不挡截图） */
+    s_infer_overlay = lv_label_create(s_chart);
+    lv_label_set_text(s_infer_overlay, "A");
+    lv_obj_set_style_text_font(s_infer_overlay, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_color(s_infer_overlay, lv_color_hex(0x000000), 0);  /* 黑色水印 */
+    lv_obj_set_style_text_opa(s_infer_overlay, LV_OPA_50, 0);                 /* 半透明 */
+    lv_obj_center(s_infer_overlay);
+    lv_obj_add_flag(s_infer_overlay, LV_OBJ_FLAG_HIDDEN);
 
     /* ── 右侧：每轴 max/min + 状态 ── */
     lv_obj_t *panel = lv_obj_create(scr);
@@ -665,11 +755,18 @@ esp_err_t gesture_demo_start(void)
         return ESP_ERR_NO_MEM;
     }
 
+    /* 推理分类器：纯 C 无动态分配，内部峰值栈约 4~5KB（采集任务栈已加大） */
+    if (gc_init() != GC_OK) {
+        ESP_LOGE(TAG, "gesture classifier init failed");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "gesture classifier ready (classes: A/B/C)");
+
     boot_btn_init();
 
-    if (xTaskCreate(capture_task, "gesture_cap", 4096, NULL, 5, NULL) != pdPASS) {
+    if (xTaskCreate(capture_task, "gesture_cap", 10240, NULL, 5, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "gesture demo started (BOOT button -> 2s capture @ 50Hz)");
+    ESP_LOGI(TAG, "gesture demo started (BOOT: 2s capture; A/B/C=CSV mode, Infer=classifier mode)");
     return ESP_OK;
 }
