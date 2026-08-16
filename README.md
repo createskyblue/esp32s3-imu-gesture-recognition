@@ -3,7 +3,13 @@
 基于 **嘉立创实战派 ESP32-S3（LCKFB-SZPI-ESP32S3）** + 板载 **QMI8658 IMU** 的手势识别示例：
 按一次 BOOT 按键采集 2 秒三轴加速度，屏幕实时显示波形，并可一键完成 A/B/C 三轴手势的实时推理。
 
-> 官方硬件文档：[立创实战派 ESP32-S3 Wiki](https://wiki.lckfb.com/zh-hans/szpi-esp32s3/) · 项目起始模板：[createskyblue/esp32s3_idf_template](https://github.com/createskyblue/esp32s3_idf_template)
+> 官方硬件文档：[立创实战派 ESP32-S3 Wiki](https://wiki.lckfb.com/zh-hans/szpi-esp32s3/) 
+>
+> 项目起始模板：[createskyblue/esp32s3_idf_template](https://github.com/createskyblue/esp32s3_idf_template)
+> 
+> 邮箱：createskyblue@outlook.com
+>
+> 博客：https://createskyblue.github.io/
 
 ## 边缘AI经典应用场景
 - 异常震动检测
