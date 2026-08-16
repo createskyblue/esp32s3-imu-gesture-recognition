@@ -5,6 +5,7 @@
 #include "app_config.h"
 #include "wifi_config_store.h"
 #include "wifi_manager.h"
+#include "sd_card.h"
 
 #include "json_http.h"
 
@@ -610,7 +611,7 @@ esp_err_t web_platform_init(void)
     const file_manager_storage_config_t file_manager_config = {
         .internal_mount_point = APP_LITTLEFS_BASE_PATH,
         .internal_partition_label = APP_LITTLEFS_PARTITION_LABEL,
-        .sd_mount_point = NULL,
+        .sd_mount_point = SD_CARD_DEFAULT_MOUNT_POINT,
     };
     const ota_manager_config_t ota_config = {
         .filesystem_partition_label = APP_LITTLEFS_PARTITION_LABEL,

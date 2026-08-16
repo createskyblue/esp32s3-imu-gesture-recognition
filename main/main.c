@@ -1,6 +1,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_heap_caps.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -221,4 +222,7 @@ void app_main(void)
     ESP_ERROR_CHECK(web_platform_register_static_fallback());
 
     ESP_LOGI(TAG, "all tasks started");
+    ESP_LOGI(TAG, "Mem: internal free=%u B, psram free=%u B",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 }
