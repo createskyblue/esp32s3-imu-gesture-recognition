@@ -18,6 +18,12 @@
 
 #include "lcd_lvgl.h"
 #include "qmi8658.h"
+#include <dirent.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+
+#include "esp_heap_caps.h"
 
 /* ═════════════════════════════ 常量 ═════════════════════════════ */
 
@@ -35,6 +41,9 @@
 #define CSV_PREFIX_B       "gesture_B_"
 #define CSV_PREFIX_C       "gesture_C_"
 #define CSV_SUFFIX         ".csv"
+
+/* 截图 */
+#define SHOT_DIR          "/sdcard/screenshots"
 
 /* UI 布局 (320x240) */
 #define UI_CHART_W         202
@@ -80,6 +89,18 @@ static lv_obj_t *s_status_label = NULL;
 static lv_obj_t *s_btn[3];
 static lv_obj_t *s_btn_label[3];
 static lv_obj_t *s_btn_infer = NULL;
+/* 截图：LVGL 任务取快照入队，写卡任务编码 BMP 存 SD（写卡不阻塞 UI） */
+typedef struct {
+    void       *buf;      /* RGB565 快照数据（PSRAM） */
+    uint32_t    w, h;     /* 图像宽高（像素） */
+    uint32_t    stride;   /* 每行字节数 */
+} shot_job_t;
+
+static QueueHandle_t s_shot_queue = NULL;
+static volatile bool s_shot_busy = false;   /* 上一张还没写完，忽略新点击 */
+static volatile bool s_shot_done = false;   /* 写卡任务已完成，待 UI 刷新提示 */
+static SemaphoreHandle_t s_shot_lock = NULL;
+static char s_shot_msg[48];
 
 static const char *s_axis_name[3] = { "X", "Y", "Z" };
 static const lv_color_t s_axis_color[3] = {
@@ -257,6 +278,172 @@ static void capture_task(void *arg)
     }
 }
 
+/* ═════════════════════════════ 屏幕截图 → BMP 存 SD ═════════════════════════════
+ * 点击图表 → LVGL 任务里 lv_snapshot 全屏快照（RGB565, PSRAM）→ 队列
+ * 交给 shot_writer 任务编码为 24 位 BMP 保存到 /sdcard/screenshots/。
+ */
+
+static void set_shot_msg(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    if (s_shot_lock != NULL && xSemaphoreTake(s_shot_lock, portMAX_DELAY) == pdTRUE) {
+        vsnprintf(s_shot_msg, sizeof(s_shot_msg), fmt, ap);
+        xSemaphoreGive(s_shot_lock);
+    }
+    va_end(ap);
+}
+
+/* 扫描截图目录，返回下一个可用序号（已有最大 shot_N.bmp + 1） */
+static int next_shot_number(void)
+{
+    int max = 0;
+    DIR *d = opendir(SHOT_DIR);
+    if (d != NULL) {
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            int n = 0;
+            if (sscanf(e->d_name, "shot_%d.bmp", &n) == 1 && n > max) {
+                max = n;
+            }
+        }
+        closedir(d);
+    }
+    return max + 1;
+}
+
+/* RGB565 → 24 位 BMP（自底向上行序；320*3=960 字节/行，无需对齐填充） */
+static esp_err_t save_bmp(const void *rgb565, uint32_t w, uint32_t h, uint32_t stride)
+{
+    mkdir(SHOT_DIR, 0777);   /* 已存在则忽略失败 */
+
+    char path[64];
+    snprintf(path, sizeof(path), "%s/shot_%03d.bmp", SHOT_DIR, next_shot_number());
+
+    const uint32_t row_bytes = w * 3;
+    const uint32_t pixel_bytes = row_bytes * h;
+    const uint32_t file_size = 54 + pixel_bytes;
+
+    FILE *f = fopen(path, "wb");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "open %s failed (SD not ready?)", path);
+        return ESP_FAIL;
+    }
+
+    uint8_t hdr[54] = {0};
+    hdr[0] = 'B'; hdr[1] = 'M';
+    hdr[2] = file_size & 0xFF;        hdr[3] = (file_size >> 8) & 0xFF;
+    hdr[4] = (file_size >> 16) & 0xFF; hdr[5] = (file_size >> 24) & 0xFF;
+    hdr[10] = 54;                     /* 像素数据偏移 */
+    hdr[14] = 40;                     /* BITMAPINFOHEADER 大小 */
+    hdr[18] = w & 0xFF;               hdr[19] = (w >> 8) & 0xFF;
+    hdr[20] = (w >> 16) & 0xFF;       hdr[21] = (w >> 24) & 0xFF;
+    hdr[22] = h & 0xFF;               hdr[23] = (h >> 8) & 0xFF;
+    hdr[24] = (h >> 16) & 0xFF;       hdr[25] = (h >> 24) & 0xFF;
+    hdr[26] = 1;                      /* planes */
+    hdr[28] = 24;                     /* bpp */
+    hdr[34] = pixel_bytes & 0xFF;     hdr[35] = (pixel_bytes >> 8) & 0xFF;
+    hdr[36] = (pixel_bytes >> 16) & 0xFF; hdr[37] = (pixel_bytes >> 24) & 0xFF;
+
+    if (fwrite(hdr, 1, sizeof(hdr), f) != sizeof(hdr)) {
+        fclose(f);
+        return ESP_FAIL;
+    }
+
+    uint8_t *rowbuf = malloc(row_bytes);
+    if (rowbuf == NULL) {
+        fclose(f);
+        return ESP_ERR_NO_MEM;
+    }
+
+    const uint8_t *base = rgb565;
+    for (uint32_t y = 0; y < h; y++) {
+        const uint16_t *row = (const uint16_t *)(base + (h - 1 - y) * stride);
+        for (uint32_t x = 0; x < w; x++) {
+            uint16_t px = row[x];
+            uint8_t r5 = (px >> 11) & 0x1F;
+            uint8_t g6 = (px >> 5) & 0x3F;
+            uint8_t b5 = px & 0x1F;
+            rowbuf[x * 3 + 0] = (uint8_t)((b5 << 3) | (b5 >> 2)); /* B */
+            rowbuf[x * 3 + 1] = (uint8_t)((g6 << 2) | (g6 >> 4)); /* G */
+            rowbuf[x * 3 + 2] = (uint8_t)((r5 << 3) | (r5 >> 2)); /* R */
+        }
+        if (fwrite(rowbuf, 1, row_bytes, f) != row_bytes) {
+            free(rowbuf);
+            fclose(f);
+            return ESP_FAIL;
+        }
+    }
+    free(rowbuf);
+    fclose(f);
+    const uint16_t *px0 = (const uint16_t *)rgb565;   /* 屏幕左上角像素（诊断用） */
+    ESP_LOGI(TAG, "screenshot saved: %s (%u B, corner 0x%04X)",
+             path, (unsigned)file_size, (unsigned)px0[0]);
+    return ESP_OK;
+}
+
+static void shot_writer_task(void *arg)
+{
+    (void)arg;
+    shot_job_t job;
+
+    for (;;) {
+        if (xQueueReceive(s_shot_queue, &job, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        esp_err_t err = save_bmp(job.buf, job.w, job.h, job.stride);
+        set_shot_msg(err == ESP_OK ? "Shot saved" : "Shot failed");
+        s_shot_done = true;
+        heap_caps_free(job.buf);
+        s_shot_busy = false;
+    }
+}
+
+/* 点击图表 → 全屏快照 → 交给写卡任务（快照必须在 LVGL 任务里做） */
+static void chart_event_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_shot_busy || s_shot_queue == NULL) {
+        return;
+    }
+
+    lv_obj_t *scr = lv_scr_act();
+    const uint32_t w = (uint32_t)lv_obj_get_width(scr);
+    const uint32_t h = (uint32_t)lv_obj_get_height(scr);
+    const uint32_t stride = lv_draw_buf_width_to_stride(w, LV_COLOR_FORMAT_RGB565);
+    const uint32_t size = stride * h;
+
+    void *buf = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (buf == NULL) {
+        ESP_LOGE(TAG, "no PSRAM for screenshot");
+        lv_label_set_text(s_status_label, "Shot: no mem");
+        return;
+    }
+
+    lv_draw_buf_t db;
+    if (lv_draw_buf_init(&db, w, h, LV_COLOR_FORMAT_RGB565, stride, buf, size) != LV_RESULT_OK ||
+        lv_snapshot_take_to_draw_buf(scr, LV_COLOR_FORMAT_RGB565, &db) != LV_RESULT_OK) {
+        ESP_LOGE(TAG, "snapshot failed");
+        heap_caps_free(buf);
+        lv_label_set_text(s_status_label, "Shot failed");
+        return;
+    }
+
+    shot_job_t job = {
+        .buf = buf,
+        .w = db.header.w,
+        .h = db.header.h,
+        .stride = db.header.stride,
+    };
+    if (xQueueSend(s_shot_queue, &job, 0) != pdTRUE) {
+        heap_caps_free(buf);
+        lv_label_set_text(s_status_label, "Shot busy");
+        return;
+    }
+    s_shot_busy = true;
+    lv_label_set_text(s_status_label, "Saving shot...");
+}
+
 /* ═════════════════════════════ LVGL UI（display 任务上下文） ═════════════════════════════ */
 
 static void btn_event_cb(lv_event_t *e)
@@ -324,6 +511,19 @@ static void ui_timer_cb(lv_timer_t *timer)
     } else if (strcmp(lv_label_get_text(s_status_label), "Sampling...") == 0) {
         lv_label_set_text(s_status_label, "Ready");
     }
+
+    /* 截图保存结果提示（写卡任务回填，与采集状态互不覆盖） */
+    if (s_shot_done) {
+        s_shot_done = false;
+        char msg[sizeof(s_shot_msg)];
+        if (s_shot_lock != NULL && xSemaphoreTake(s_shot_lock, 0) == pdTRUE) {
+            memcpy(msg, s_shot_msg, sizeof(msg));
+            xSemaphoreGive(s_shot_lock);
+        } else {
+            msg[0] = '\0';
+        }
+        lv_label_set_text(s_status_label, msg);
+    }
     (void)timer;
 }
 
@@ -349,6 +549,9 @@ void gesture_demo_ui_create(void)
         s_series[i] = lv_chart_add_series(s_chart, s_axis_color[i], LV_CHART_AXIS_PRIMARY_Y);
         lv_chart_set_series_ext_y_array(s_chart, s_series[i], s_disp[i]);
     }
+
+    /* 点击图表 → 屏幕截图保存到 SD 卡 */
+    lv_obj_add_event_cb(s_chart, chart_event_cb, LV_EVENT_CLICKED, NULL);
 
     /* ── 右侧：每轴 max/min + 状态 ── */
     lv_obj_t *panel = lv_obj_create(scr);
@@ -453,6 +656,14 @@ esp_err_t gesture_demo_start(void)
     }
 
     s_samples_mutex = xSemaphoreCreateMutex();
+
+    /* 截图：LVGL 任务取快照入队 → 写卡任务编码 BMP 存 SD */
+    s_shot_lock = xSemaphoreCreateMutex();
+    s_shot_queue = xQueueCreate(2, sizeof(shot_job_t));
+    if (xTaskCreate(shot_writer_task, "shot_save", 6144, NULL, 4, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "shot writer task create failed");
+        return ESP_ERR_NO_MEM;
+    }
 
     boot_btn_init();
 
