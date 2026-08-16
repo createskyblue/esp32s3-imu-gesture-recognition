@@ -61,6 +61,45 @@ LCD 的 CS 引脚由 PCA9557 IO 扩展芯片控制（I2C 地址 0x19，IO0），
 | LCD CS   | PCA9557（I2C 地址 0x19，IO0） |
 | I2C SDA  | IO1  |
 | I2C SCL  | IO2  |
+
+### LCD 刷新率：DRAM vs PSRAM 全屏对比（实测）
+
+显示缓冲区放在内部 DRAM 还是外部 PSRAM，对全屏刷新率影响显著。以下数据来自
+**立创实战派 ESP32-S3（ST7789 320×240 RGB565，SPI 80 MHz 单线，CPU 240 MHz）**
+的 30 帧强制全屏重绘实测（每帧改背景色 + `lv_obj_invalidate` + `lv_timer_ready`
+强制刷新 timer 到期，避免 LVGL 内容不变时不重绘）：
+
+| 缓冲区 | Flush 方式 | 全屏刷新率 | 说明 |
+|--------|-----------|-----------|------|
+| 24 行 DRAM + 逐像素字节交换 | 同步 | 36.16 fps | 每帧 10 次 SPI 事务，命令/地址开销大 |
+| 24 行 PSRAM + 逐像素字节交换 | 同步 | 34.68 fps | 同上，PSRAM 无额外优势 |
+| 24 行 DRAM + RGB565_SWAPPED | 同步 | 43.04 fps | 免字节交换，flush 零拷贝 |
+| 24 行 DRAM + RGB565_SWAPPED | 异步 q=4 | 51.27 fps | 渲染是瓶颈，双缓冲无提升 |
+| 60 行 PSRAM + RGB565_SWAPPED | 异步 q=4 | 48.68 fps | 分块仍有开销 |
+| 整帧 240 行 PSRAM + RGB565_SWAPPED | 异步 q=4 | **62.86 fps** | SPI 传输与下一帧渲染跨帧流水线重叠 |
+
+**结论：整帧单块缓冲（PSRAM）是 60 fps 的关键。** 它让每帧只有 1 次 SPI 事务、
+消除分块命令开销，并使 SPI 传输（约 15.4 ms）与下一帧渲染（约 9 ms）重叠，
+帧时间被压缩到 SPI 传输本身。DRAM 放不下整帧（307 KB），天然受分块开销限制；
+因此全屏刷新场景 PSRAM 完胜。
+
+两个额外的关键优化（`components/lcd_lvgl/lcd_lvgl.c`）：
+
+- **`lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565_SWAPPED)`**：让 LVGL
+  直接以 ST7789 的大端字节序渲染，flush 回调零拷贝直传，省掉逐像素字节交换。
+- **`esp_lcd_panel_io_spi_config_t.flags.psram_dma_direct = true`**：允许 SPI DMA
+  直接从 PSRAM 读像素。默认路径会把 PSRAM 缓冲 `memcpy` 到内部 RAM 再 DMA，
+  实测只有约 7.4 MB/s；开启后实测 **9.97 MB/s ≈ 80 MHz 单线 SPI 理论极限
+  （10 MB/s）**。ESP32-S3 的 GDMA 本身支持从外部 PSRAM 读数据（`SOC_PSRAM_DMA_CAPABLE`），
+  只是驱动默认关闭了该直通能力。
+
+配套配置：`CONFIG_LV_DEF_REFR_PERIOD` 33→16 ms（LVGL 刷新 timer 周期，上限 60 Hz）、
+显示任务轮询 `DISPLAY_REFRESH_MS` 33→5 ms。原始 SPI 裸吞吐对照：整帧 PSRAM
+15.40 ms → 9.97 MB/s；60 行 DRAM（纯线速对照）4.255 ms → 9.03 MB/s。
+
+复现基准：把 `CONFIG_LCD_LVGL_BENCHMARK` 置 `y`（默认 `n`）后编译烧录，
+串口会打印 `RAW SPI ...` 与 `FULLSCREEN refresh ...` 结果。
+
 ## 网页端点
 
 | 路径 | 说明 |
