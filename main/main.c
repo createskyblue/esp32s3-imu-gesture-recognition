@@ -6,10 +6,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 #include "app_storage.h"
 #include "led_task.h"
 #include "lcd_lvgl.h"
+#include "sd_card.h"
 #include "web_platform.h"
 #include "wifi_config_store.h"
 #include "wifi_manager.h"
@@ -54,12 +57,56 @@ static void build_ble_device_name(char *buf, size_t buf_size)
     snprintf(buf, buf_size, "ESP32S3-%02X%02X%02X", mac[3], mac[4], mac[5]);
 }
 
+
+/* Simple SD card read/write self-test: write a file, read it back, compare. */
+static void sd_card_rw_selftest(void)
+{
+    const char *path = "/sdcard/lckfb_sd_test.txt";
+    const char *payload = "LCKFB ESP32-S3 SD card R/W test OK\n";
+    char buf[160] = {0};
+
+    FILE *f = fopen(path, "w");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "SD test: cannot open %s for write", path);
+        return;
+    }
+    const size_t written = fwrite(payload, 1, strlen(payload), f);
+    fclose(f);
+    if (written != strlen(payload)) {
+        ESP_LOGE(TAG, "SD test: short write (%d/%d bytes)",
+                 (int)written, (int)strlen(payload));
+        return;
+    }
+
+    f = fopen(path, "r");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "SD test: cannot open %s for read", path);
+        return;
+    }
+    const size_t got = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[got] = '\0';
+
+    if (got == strlen(payload) && strcmp(buf, payload) == 0) {
+        ESP_LOGI(TAG, "SD R/W test PASS (%d bytes at %s)", (int)got, path);
+    } else {
+        ESP_LOGE(TAG, "SD R/W test FAIL: got %d bytes: '%s'", (int)got, buf);
+    }
+}
+
 void app_main(void)
 {
     const esp_err_t storage_err = app_storage_init();
     if (storage_err != ESP_OK) {
         ESP_LOGE(TAG, "LittleFS unavailable: %s; starting AP + OTA recovery mode",
                  esp_err_to_name(storage_err));
+    }
+
+    /* SD card (LCKFB board, SDMMC 1-bit): init + simple R/W self-test */
+    if (sd_card_init() == ESP_OK) {
+        sd_card_rw_selftest();
+    } else {
+        ESP_LOGW(TAG, "SD card init failed; skip R/W self-test");
     }
 
     /* 立创实战派 LCD (ST7789) + LVGL 9.5: 创建显示任务点亮屏幕 */
