@@ -1,4 +1,6 @@
-dependencies:
+﻿dependencies:
   # Latest LVGL on the Espressif component registry (9.5.0), same version
   # used by the ESP32_PAR20_4H_IDF reference project.
   lvgl/lvgl: "9.5.0"
+  # 立创实战派 触摸屏（FT5x06 电容触摸，与 LCD 同 I2C 总线）
+  espressif/esp_lcd_touch_ft5x06: "^1.0.6"

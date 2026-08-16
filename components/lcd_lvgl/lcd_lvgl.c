@@ -1,4 +1,4 @@
-#include "lcd_lvgl.h"
+﻿#include "lcd_lvgl.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -10,8 +10,10 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_io.h"
+#include "esp_lcd_io_i2c.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_st7789.h"
+#include "esp_lcd_touch_ft5x06.h"
 #include "esp_log.h"
 #include "esp_private/esp_clk.h"
 #include "esp_timer.h"
@@ -77,6 +79,7 @@ static i2c_master_bus_handle_t s_i2c_bus = NULL;
 static i2c_master_dev_handle_t s_pca9557_dev = NULL;
 static esp_lcd_panel_handle_t s_panel = NULL;
 static esp_lcd_panel_io_handle_t s_io = NULL;
+static lcd_lvgl_screen_builder_t s_screen_builder = NULL;
 
 /* Posted from the esp_lcd DMA-done callback so lcd_flush_wait_cb() can
  * block (instead of LVGL's default busy-loop) while a frame is draining. */
@@ -376,6 +379,11 @@ static void demo_hsv_timer_cb(lv_timer_t *timer)
 
 static void demo_screen_create(void)
 {
+    /* Application UI takes over when a screen builder is registered. */
+    if (s_screen_builder != NULL) {
+        s_screen_builder();
+        return;
+    }
     s_demo_screen = lv_scr_act();
     lv_obj_set_style_bg_color(s_demo_screen, lv_color_hex(0x000000), 0);
     lv_timer_t *t = lv_timer_create(demo_hsv_timer_cb, 16, NULL);
@@ -436,6 +444,65 @@ static void run_fullscreen_benchmark(void)
 }
 #endif /* CONFIG_LCD_LVGL_BENCHMARK */
 
+/* ═══════════════ FT5x06 电容触摸（与 LCD 同 I2C 总线） ═══════════════ */
+
+static esp_lcd_touch_handle_t s_touch = NULL;
+
+/* LVGL 轮询读取触摸点（LV_OS_NONE：read_cb 运行在 display 任务上下文，天然线程安全） */
+static void touch_read_cb(lv_indev_t *drv, lv_indev_data_t *data)
+{
+    (void)drv;
+    if (s_touch == NULL) {
+        data->state = LV_INDEV_STATE_REL;
+        return;
+    }
+    esp_lcd_touch_read_data(s_touch);
+    esp_lcd_touch_point_data_t pts[1];
+    uint8_t n = 0;
+    if (esp_lcd_touch_get_data(s_touch, pts, &n, 1) == ESP_OK && n > 0) {
+        data->point.x = pts[0].x;
+        data->point.y = pts[0].y;
+        data->state = LV_INDEV_STATE_PRESSED;
+    } else {
+        data->state = LV_INDEV_STATE_REL;
+    }
+}
+
+/* 初始化触摸屏并注册 LVGL 指针输入设备；坐标映射与屏幕旋转（swap_xy + mirror_x）一致 */
+static void bsp_touch_init(void)
+{
+    esp_lcd_touch_config_t tp_cfg = {
+        .x_max = LCD_V_RES,      /* 触控 IC 原生 240x320，经 swap+mirror 映射到 320x240 */
+        .y_max = LCD_H_RES,
+        .rst_gpio_num = GPIO_NUM_NC,  /* 与 LCD 共用复位 */
+        .int_gpio_num = GPIO_NUM_NC,  /* 轮询模式，不用中断脚 */
+        .levels = {
+            .reset = 0,
+            .interrupt = 0,
+        },
+        .flags = {
+            .swap_xy = 1,
+            .mirror_x = 1,
+            .mirror_y = 0,
+        },
+    };
+
+    esp_lcd_panel_io_handle_t tp_io = NULL;
+    const esp_lcd_panel_io_i2c_config_t tp_io_cfg = ESP_LCD_TOUCH_IO_I2C_FT5x06_CONFIG();
+    if (esp_lcd_new_panel_io_i2c(s_i2c_bus, &tp_io_cfg, &tp_io) != ESP_OK) {
+        ESP_LOGE(TAG, "touch panel IO init failed");
+        return;
+    }
+    if (esp_lcd_touch_new_i2c_ft5x06(tp_io, &tp_cfg, &s_touch) != ESP_OK) {
+        ESP_LOGE(TAG, "FT5x06 touch init failed");
+        return;
+    }
+
+    lv_indev_t *indev = lv_indev_create();
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(indev, touch_read_cb);
+    ESP_LOGI(TAG, "FT5x06 touch ready, LVGL pointer indev registered");
+}
 static void display_task(void *arg)
 {
     (void)arg;
@@ -494,6 +561,9 @@ static void display_task(void *arg)
     lv_display_set_buffers(disp, buf1, buf2, LCD_BUFFER_BYTES,
                            LV_DISPLAY_RENDER_MODE_PARTIAL);
 
+    bsp_touch_init();   /* 触摸屏 + LVGL 指针输入设备 */
+
+
     demo_screen_create();
 
     ESP_LOGI(TAG, "display task started");
@@ -514,6 +584,20 @@ static void display_task(void *arg)
 }
 
 /* ═══════════════ public API ═══════════════ */
+
+esp_err_t lcd_lvgl_get_i2c_bus(i2c_master_bus_handle_t *bus)
+{
+    if (bus == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *bus = s_i2c_bus;
+    return (s_i2c_bus != NULL) ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+void lcd_lvgl_set_screen_builder(lcd_lvgl_screen_builder_t builder)
+{
+    s_screen_builder = builder;
+}
 
 esp_err_t lcd_lvgl_start(void)
 {

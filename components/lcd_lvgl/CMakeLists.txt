@@ -1,6 +1,6 @@
-idf_component_register(SRCS "lcd_lvgl.c"
+﻿idf_component_register(SRCS "lcd_lvgl.c"
                     INCLUDE_DIRS "."
-                    REQUIRES lvgl esp_lcd esp_driver_spi esp_driver_i2c esp_driver_ledc esp_driver_gpio esp_timer esp_hw_support freertos log heap)
+                    REQUIRES lvgl esp_lcd esp_lcd_touch esp_lcd_touch_ft5x06 esp_driver_spi esp_driver_i2c esp_driver_ledc esp_driver_gpio esp_timer esp_hw_support freertos log heap)
 
 # LVGL's esp.cmake compiles with LV_CONF_INCLUDE_SIMPLE; relax only the
 # type-limits warning for the LVGL target so IDF's -Werror does not break it

@@ -1,4 +1,4 @@
-#include "esp_err.h"
+﻿#include "esp_err.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_heap_caps.h"
@@ -15,6 +15,7 @@
 #include "led_task.h"
 #endif
 #include "lcd_lvgl.h"
+#include "gesture_demo.h"
 #include "sd_card.h"
 #include "web_platform.h"
 #include "wifi_config_store.h"
@@ -112,10 +113,17 @@ void app_main(void)
         ESP_LOGW(TAG, "SD card init failed; skip R/W self-test");
     }
 
-    /* 立创实战派 LCD (ST7789) + LVGL 9.5: 创建显示任务点亮屏幕 */
+    /* 立创实战派 LCD (ST7789) + LVGL 9.5: 先注册手势演示 UI，再创建显示任务 */
+    lcd_lvgl_set_screen_builder(gesture_demo_ui_create);
     esp_err_t lcd_err = lcd_lvgl_start();
     if (lcd_err != ESP_OK) {
         ESP_LOGE(TAG, "LCD/LVGL start failed: %s", esp_err_to_name(lcd_err));
+    }
+
+    /* 加速度计手势识别：IMU + BOOT 按键 + CSV 采集（依赖 lcd_lvgl 的 I2C 总线） */
+    esp_err_t gesture_err = gesture_demo_start();
+    if (gesture_err != ESP_OK) {
+        ESP_LOGE(TAG, "Gesture demo start failed: %s", esp_err_to_name(gesture_err));
     }
 
 #if CONFIG_LED_TASK_ENABLE

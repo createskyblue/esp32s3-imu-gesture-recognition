@@ -4,4 +4,4 @@ cmake_minimum_required(VERSION 3.22)
 
 set(EXTRA_PARTITION_SUBTYPES "data,littlefs,0x83")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(esp32s3_template)
+project(esp32s3_gesture_demo)
