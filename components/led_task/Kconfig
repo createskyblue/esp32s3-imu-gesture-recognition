@@ -1,0 +1,12 @@
+menu "LED Task"
+
+config LED_TASK_ENABLE
+    bool "Enable LED task (board LEDs)"
+    default n
+    help
+        Standalone four-channel LED driver. The LCKFB 立创实战派 ESP32-S3 board
+        has no on-board LEDs (only the LCD backlight), so this is disabled by
+        default. Enable it in menuconfig if your target board has LEDs.
+        The code is kept in the tree and only linked when enabled.
+
+endmenu

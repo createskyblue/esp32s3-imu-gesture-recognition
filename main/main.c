@@ -11,7 +11,9 @@
 #include <sys/stat.h>
 
 #include "app_storage.h"
+#if CONFIG_LED_TASK_ENABLE
 #include "led_task.h"
+#endif
 #include "lcd_lvgl.h"
 #include "sd_card.h"
 #include "web_platform.h"
@@ -116,6 +118,8 @@ void app_main(void)
         ESP_LOGE(TAG, "LCD/LVGL start failed: %s", esp_err_to_name(lcd_err));
     }
 
+#if CONFIG_LED_TASK_ENABLE
+    /* 立创实战派无板载 LED，默认关闭；代码保留，menuconfig 开启 CONFIG_LED_TASK_ENABLE 后启用 */
     ESP_ERROR_CHECK(led_task_init());
     const led_cmd_t heartbeat = {
         .led = LED_GREEN,
@@ -124,6 +128,7 @@ void app_main(void)
         .on_ms = 250u,
     };
     led_send_cmd(&heartbeat);
+#endif
 
     /* Set timezone to UTC+8 (China Standard Time) */
     setenv("TZ", "CST-8", 1);
@@ -176,7 +181,9 @@ void app_main(void)
         if (!wifi_manager_is_started()) {
             ESP_LOGE(TAG, "WiFi initialization failed: %s",
                      esp_err_to_name(wifi_err));
+#if CONFIG_LED_TASK_ENABLE
             led_fatal_error();
+#endif
             return;
         }
         ESP_LOGW(TAG, "WiFi initialization incomplete: %s; provisioning AP remains active",
