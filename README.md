@@ -5,6 +5,13 @@
 
 > 官方硬件文档：[立创实战派 ESP32-S3 Wiki](https://wiki.lckfb.com/zh-hans/szpi-esp32s3/) · 项目起始模板：[createskyblue/esp32s3_idf_template](https://github.com/createskyblue/esp32s3_idf_template)
 
+## 边缘AI经典应用场景
+- 异常震动检测
+- 有害气体预警
+- 电弧故障检测
+- 电机故障检测
+- 人体运动分类
+
 ## 效果演示
 
 | 数据采集 | 实时推理 |
