@@ -1,270 +1,72 @@
-# ESP32-S3 通用模板
+# ESP32-S3 手势识别 Demo（嘉立创实战派）
 
-基于 ESP32-S3 的基础设施模板，提供 WiFi 配网、文件系统、SD 卡、OTA 升级等开箱即用的功能。适合作为新项目的起点。
+基于 **嘉立创实战派 ESP32-S3（LCKFB-SZPI-ESP32S3）** + 板载 **QMI8658 IMU** 的手势识别示例：
+按一次 BOOT 按键采集 2 秒三轴加速度，屏幕实时显示波形，并可一键完成 A/B/C 三轴手势的实时推理。
 
-> 官方硬件文档：立创实战派 ESP32-S3（LCKFB-SZPI-ESP32S3）→ [https://wiki.lckfb.com/zh-hans/szpi-esp32s3/](https://wiki.lckfb.com/zh-hans/szpi-esp32s3/)
+> 官方硬件文档：[立创实战派 ESP32-S3 Wiki](https://wiki.lckfb.com/zh-hans/szpi-esp32s3/)
 
-## 功能一览
+## 背景
+
+使用嘉立创实战派 ESP32-S3 实现基于 IMU 的手势识别 Demo，覆盖从数据采集到模型部署的完整链路。
+该板集成 ST7789 屏幕、FT5x06 触摸、QMI8658 六轴 IMU 与 SD 卡槽，无需外接模块即可完成
+「采集 → 标注 → 训练 → 部署 → 实时推理」的闭环演示。
+
+## 开发流程
+
+1. **手势数据采集**：QMI8658 加速度计 ±4 g / 50 Hz 采样，单次 2 秒（100 样本 × 3 轴），
+   按 A/B/C 分类追加写入 SD 卡 CSV（三轴交错存储，参考 Nano Edge AI 格式）。
+2. **数据清洗**：去趋势（逐轴减去窗口均值）、剔除异常/丢失样本，统一量纲到 g。
+3. **数据增强**：Hann 加窗 + 64 点 STFT 滑窗（偏移 0/36），扩展频谱特征并抑制频谱泄漏。
+4. **特征筛选**：每轴取 FFT 幅度谱 bin 1..32（去 DC），每窗 64 维、三轴共 **192 维**特征。
+5. **模型基准测试**：在线性 SVM、浅层网络等候选结构上对比精度/体积/算力，选定
+   「线性 one-vs-rest SVM + 温度缩放 Softmax」（3×192 系数 ≈ 3 KB，训练集 100% 正确）。
+6. **部署**：模型常量（窗函数、FFT 系数、SVM 权重）固化为 `gesture_classifier_model.h`，
+   以纯 C 组件移植到 ESP32-S3，无动态分配，直接调用。
+
+## 推理结构
+
+分类器组件位于 `components/gesture_classifier/`（由 `gesture_c` 推理库移植，纯 C99 + libm）：
+
+```
+输入 float in[300]（100 样本 × 3 轴，X/Y/Z 交错，单位 g）
+  │
+  ├─ 1. 去趋势 Detrend      每轴减去窗口均值，消除静态偏置
+  ├─ 2. STFT               每轴 2 个 Hann 窗（64 点，偏移 0/36）→ 64 点实数 FFT
+  │                        → 取幅度谱 bin 1..32，×1/16 归一化 → 每轴 64 维
+  ├─ 3. 特征交错 Interleave 192 维特征按 特征优先/轴交错 排列：feat[f*3+c]
+  ├─ 4. 线性 SVM           3 组 one-vs-rest 权重（3×192 + 3 截距）→ 3 个分数
+  └─ 5. Softmax + Argmax   温度 β=5.0 缩放后 softmax → 概率 + 类别
+                           类 id：0=C, 1=B, 2=A
+```
+
+- **实时性**：50 Hz 采集 2 秒 → 分类计算毫秒级完成；结果以**彩色半透明大字**叠加到图表右下角（A=红 / B=绿 / C=蓝）。
+- **资源占用**：零动态分配，峰值栈约 4–5 KB，模型常量存 Flash 约 3 KB。
+- **交互**：`Infer` 按钮切换推理模式，物理 `BOOT` 按键触发采样；`A/B/C` 按钮切换 CSV 标注模式。
+
+## 功能
 
 | 功能 | 说明 |
 |------|------|
-| **WiFi AP+STA** | 同时运行 AP 热点（`ESP32S3-Template`）和 STA 客户端 |
-| **Web 配网** | 网页端输入 SSID/密码，配置持久化到 LittleFS，自动重连 |
-| **Captive Portal** | DNS 劫持，手机连上 AP 后自动弹出配网页面 |
-| **LittleFS** | 1 MB 内部闪存文件系统，存放网页和配置文件 |
-| **SD 卡（可选）** | 独立 SDMMC(1-bit)/FAT 驱动；默认固件不初始化、不占用 SD GPIO |
-| **文件管理器** | Web 界面浏览/上传/下载/删除/新建文件夹，支持内部 Flash 和 SD 卡双存储 |
-| **OTA 升级** | 支持固件 + 文件系统远程升级，也支持网页直接上传刷写 |
-| **SD 日志（可选）** | 独立的 ESP_LOG 双写组件；默认固件不初始化、不接管全局日志输出 |
-| **SNTP 授时** | STA 连接成功后自动同步北京时间（ntp.aliyun.com） |
-| **LED 心跳（默认关闭）** | 独立四路 LED 组件；立创实战派无板载 LED，默认不启用，需要时 menuconfig 开启 `CONFIG_LED_TASK_ENABLE` |
-| **LCD + LVGL** | 立创实战派 ST7789 屏幕 + LVGL 9.5 显示任务（`main` 默认启用） |
-| **调试接口** | `/debug.json` 查看堆内存、PSRAM、任务列表、运行时间 |
+| 三轴波形 | 2 s @ 50 Hz 加速度实时波形 + 每轴最大/最小值 |
+| CSV 标注 | A/B/C 分类写入 SD 卡，每次开机新建文件，追加写入 |
+| 实时推理 | Infer 模式 + BOOT 触发，三分类彩色结果叠加图表 |
+| 截图 | 点击图表区保存全屏截图到 SD 卡（`/sdcard/screenshots/`） |
+| 全屏 60 fps | LVGL 整帧 PSRAM 缓冲 + RGB565_SWAPPED + 异步 DMA（详见模板仓库刷新率章节） |
 
-## 界面预览
+## 硬件接线（立创实战派）
 
-![首页仪表盘](img/首页.jpg)
-
-![文件管理器](img/文件管理器.jpg)
-
-## 硬件接线
-
-### LED（低电平点亮，默认关闭）
-
-立创实战派开发板**没有板载 LED**（只有屏幕背光），因此默认固件不初始化 `led_task`，以下 GPIO 空闲。若你的目标板有独立 LED，在 menuconfig 中开启 `CONFIG_LED_TASK_ENABLE` 后，`app_main()` 才会初始化 `led_task`；绿灯作为心跳灯，以 500 ms 周期、250 ms 点亮时间持续闪烁。
-
-| LED | GPIO |
-|-----|------|
-| 红  | IO15 |
-| 黄  | IO7  |
-| 绿  | IO6  |
-| 蓝  | IO5  |
-
-### SD 卡（SDMMC 1-bit 模式，立创实战派）
-
-| 信号 | GPIO |
+| 外设 | 引脚 |
 |------|------|
-| CLK  | IO47 |
-| CMD  | IO48 |
-| D0   | IO21 |
-
-### LCD（ST7789 + LVGL 9.5，立创实战派）
-
-main 默认调用 lcd_lvgl_start() 创建显示任务点亮屏幕（ST7789 320x240，LVGL 9.5.0）。
-LCD 的 CS 引脚由 PCA9557 IO 扩展芯片控制（I2C 地址 0x19，IO0），初始化后自动拉低。
-
-| 信号 | GPIO |
-|------|------|
-| SPI MOSI | IO40 |
-| SPI SCLK | IO41 |
-| LCD DC   | IO39 |
-| 背光 BL  | IO42 |
-| LCD CS   | PCA9557（I2C 地址 0x19，IO0） |
-| I2C SDA  | IO1  |
-| I2C SCL  | IO2  |
-
-### LCD 刷新率：DRAM vs PSRAM 全屏对比（实测）
-
-显示缓冲区放在内部 DRAM 还是外部 PSRAM，对全屏刷新率影响显著。以下数据来自
-**立创实战派 ESP32-S3（ST7789 320×240 RGB565，SPI 80 MHz 单线，CPU 240 MHz）**
-的 30 帧强制全屏重绘实测（每帧改背景色 + `lv_obj_invalidate` + `lv_timer_ready`
-强制刷新 timer 到期，避免 LVGL 内容不变时不重绘）：
-
-| 缓冲区 | Flush 方式 | 全屏刷新率 | 说明 |
-|--------|-----------|-----------|------|
-| 24 行 DRAM + 逐像素字节交换 | 同步 | 36.16 fps | 每帧 10 次 SPI 事务，命令/地址开销大 |
-| 24 行 PSRAM + 逐像素字节交换 | 同步 | 34.68 fps | 同上，PSRAM 无额外优势 |
-| 24 行 DRAM + RGB565_SWAPPED | 同步 | 43.04 fps | 免字节交换，flush 零拷贝 |
-| 24 行 DRAM + RGB565_SWAPPED | 异步 q=4 | 51.27 fps | 渲染是瓶颈，双缓冲无提升 |
-| 60 行 PSRAM + RGB565_SWAPPED | 异步 q=4 | 48.68 fps | 分块仍有开销 |
-| 整帧 240 行 PSRAM + RGB565_SWAPPED | 异步 q=4 | **62.86 fps** | SPI 传输与下一帧渲染跨帧流水线重叠 |
-
-**结论：整帧单块缓冲（PSRAM）是 60 fps 的关键。** 它让每帧只有 1 次 SPI 事务、
-消除分块命令开销，并使 SPI 传输（约 15.4 ms）与下一帧渲染（约 9 ms）重叠，
-帧时间被压缩到 SPI 传输本身。DRAM 放不下整帧（307 KB），天然受分块开销限制；
-因此全屏刷新场景 PSRAM 完胜。
-
-两个额外的关键优化（`components/lcd_lvgl/lcd_lvgl.c`）：
-
-- **`lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565_SWAPPED)`**：让 LVGL
-  直接以 ST7789 的大端字节序渲染，flush 回调零拷贝直传，省掉逐像素字节交换。
-- **`esp_lcd_panel_io_spi_config_t.flags.psram_dma_direct = true`**：允许 SPI DMA
-  直接从 PSRAM 读像素。默认路径会把 PSRAM 缓冲 `memcpy` 到内部 RAM 再 DMA，
-  实测只有约 7.4 MB/s；开启后实测 **9.97 MB/s ≈ 80 MHz 单线 SPI 理论极限
-  （10 MB/s）**。ESP32-S3 的 GDMA 本身支持从外部 PSRAM 读数据（`SOC_PSRAM_DMA_CAPABLE`），
-  只是驱动默认关闭了该直通能力。
-
-配套配置：`CONFIG_LV_DEF_REFR_PERIOD` 33→16 ms（LVGL 刷新 timer 周期，上限 60 Hz）、
-显示任务轮询 `DISPLAY_REFRESH_MS` 33→5 ms。原始 SPI 裸吞吐对照：整帧 PSRAM
-15.40 ms → 9.97 MB/s；60 行 DRAM（纯线速对照）4.255 ms → 9.03 MB/s。
-
-复现基准：把 `CONFIG_LCD_LVGL_BENCHMARK` 置 `y`（默认 `n`）后编译烧录，
-串口会打印 `RAW SPI ...` 与 `FULLSCREEN refresh ...` 结果。
-
-## 网页端点
-
-| 路径 | 说明 |
-|------|------|
-| `/` | 仪表盘首页（WiFi 状态、配网表单、系统信息） |
-| `/files` | 文件管理器 |
-| `/files.html` | 文件管理器（独立页面） |
-| `/network.json` | 网络状态 JSON（含 STA/AP 信息、`ap_password`、`app_build_id`） |
-| `/wifi_config.json` | WiFi 配置读写（GET/POST，含 STA 静态 IP/DNS 设置） |
-| `/debug.json` | 系统调试信息 |
-| `/ota/status` | OTA 升级状态 |
-| `/ota/start` | 触发远程 OTA（POST JSON） |
-| `/ota/upload/firmware` | 上传固件刷写 |
-| `/ota/upload/filesystem` | 上传文件系统镜像 |
-| `/api/fs` | 文件管理 API（list/download/delete/mkdir/upload） |
-| `/hello` | 可选 Hello World 示例端点（默认未注册） |
+| IMU QMI8658（I2C，与 LCD 触摸共用） | SDA=IO1, SCL=IO2 |
+| SD 卡（SDMMC 1-bit） | CLK=IO47, CMD=IO48, D0=IO21 |
+| LCD ST7789 | SPI MOSI=IO40, SCLK=IO41, DC=IO39, 背光=IO42, CS=PCA9557(0x19, IO0) |
 
 ## 快速开始
 
 ```bash
-# 1. 克隆或复制此模板
-cp -r esp32s3_template my_project && cd my_project
-
-# 2. （可选）把 WiFi 凭据预置到 LittleFS 数据镜像
-cp main/wifi_config.example.json data/wifi_config.json
-# 编辑 data/wifi_config.json；该文件已被 git 忽略
-
-# 3. 编译烧录
 idf.py set-target esp32s3
 idf.py build
-idf.py -p COMx flash monitor
+idf.py -p /dev/ttyACM0 flash monitor
 ```
 
-## 首次使用
-
-设备启动后：
-
-- **无 WiFi 配置**：手机会搜到热点 `ESP32S3-Template`（密码 `template1234`），连接后浏览器打开任意网址自动跳转配网页面
-- **已配置 WiFi**：设备自动连接路由器，查看路由器后台获取 IP，浏览器访问即可
-
-## 项目结构
-
-```
-├── CMakeLists.txt
-├── partitions.csv              # OTA 分区表 (app×2 + LittleFS)
-├── sdkconfig.defaults          # ESP-IDF 默认配置
-├── main/                       # 应用层（基础设施编排 + 业务端点）
-│   ├── main.c                  # 入口：LittleFS → SD → LCD/LVGL → LED(可选) → WiFi配置 → WiFi → Web
-│   ├── app_storage.c/.h        # 应用存储所有者：挂载 LittleFS
-│   ├── wifi_config_store.c/.h  # WiFi 凭据 JSON 读写 + 应用事务（应用层）
-│   ├── app_config.h            # 应用身份标识（APP_BUILD_ID）——复制模板时改这里
-│   ├── web_platform.c/.h       # HTTP 服务器 + 页面路由 + Web 组件编排
-│   ├── hello_web.c/.h          # 可选自定义 HTTP 端点示例（从这里开始写业务）
-│   └── wifi_config.example.json
-├── data/
-│   ├── common.css              # 双页面共享样式（设计 tokens + 按钮 + 布局基类）
-│   ├── index.html              # 仪表盘首页
-│   └── files.html              # 文件管理器页面
-└── components/
-    ├── wifi_manager/           # WiFi APSTA + 可选 DNS/SNTP + 时间同步回调（启动策略由调用方传入）
-    ├── ota_manager/            # OTA 状态机 + 下载刷写 + 上传逻辑
-    ├── file_manager/           # Web 文件管理器 API
-    ├── led_task/               # 独立四路 LED 驱动（默认关闭，CONFIG_LED_TASK_ENABLE 开启）
-    ├── sd_card/                # SD 卡 SDMMC 1-bit 驱动（配置化入口 sd_card_init_with_config）
-    ├── lcd_lvgl/               # 立创实战派 LCD(ST7789) + LVGL 9.5 显示组件（main 默认启用）
-    ├── sd_logger/              # 可选日志双写组件（默认未启用）
-    └── json/                   # 共享 HTTP/JSON 辅助（json_http.h/.c）
-```
-
-## 添加自己的业务
-
-项目采用 **平台 + 业务** 分层架构：
-
-1. `main/main.c` — 启动编排，先挂载 LittleFS、加载 JSON，再把凭据传给 WiFi
-2. `main/web_platform.c` — HTTP / OTA / 配网 / 仪表盘
-3. `main/hello_web.c/.h` — 可选业务端点示例；需要时再加入默认构建
-
-**启用示例端点并添加自定义业务：**
-
-```c
-// 1. 在 main/CMakeLists.txt 的 SRCS 中加入 "hello_web.c"
-// 2. 在 main.c 中加入头文件和注册调用：
-//    #include "hello_web.h"
-//    hello_web_register(web_platform_get_server())
-// 3. 在 hello_web.c 中仿照 hello_handler() 写你的 handler
-// 4. web_platform_register_static_fallback() 仍必须最后调用
-```
-
-**更复杂的场景**：直接在 `components/` 下新建独立组件，在 `main/CMakeLists.txt` 中添加依赖即可。
-
-**可复用模块**（`wifi_manager` / `ota_manager` / `file_manager` / `led_task` / `sd_card` / `sd_logger`）位于 `components/`，由应用层按需选择和编排。
-
-### WiFi 凭据边界
-
-默认启动流程先挂载 LittleFS，再由应用层把 `/littlefs/wifi_config.json` 读入 `wifi_manager_config_t.sta`，最后把完整启动配置传给 `wifi_manager_init()`。STA 凭据使用独立的 `wifi_manager_credentials_t`，网页运行时配网只能更新 STA，不会覆盖 AP、DNS 或 SNTP 策略。WiFi 组件本身不读取文件、不解析 JSON，也不支持 `wifi_config.h` 宏配置。
-
-`wifi_config.json` 除 `ssid` / `password` 外还支持 STA 的 IP 策略字段：`ip_mode`（`"dhcp"` 或 `"static"`，缺省 DHCP），静态模式下还需 `static_ip`、`netmask`、`gateway`、`dns` 四个 IPv4 地址。静态模式会停用 STA 的 DHCP 客户端并手动设定地址与 DNS；切回 DHCP 时恢复自动获取。AP 热点身份（`ap_ssid` / `ap_password`）也可持久化，缺省回退到 `main/main.c` 的编译期默认值；网页端可独立修改，改动约 3 秒后生效并会断开当前连到热点的客户端。
-
-AP 名称和密码、信道、最大客户端数、是否启用 captive-portal DNS 以及 SNTP 服务器均在 `main/main.c` 的启动配置中给出，应用可在初始化前直接调整，无需修改 `wifi_manager` 组件。默认 AP 名称会自动追加芯片 MAC 派生的 6 位十六进制后缀（如 `ESP32S3-Template-A1B2C3`），便于区分同一模板烧录的多块板子；持久化配置中的自定义 AP 名称（不等于默认基础名时）优先级更高。
-
-LittleFS 的挂载和并发访问统一由应用层 `app_storage` 管理。文件系统 OTA 只接收应用传入的分区标签和“卸载/重挂载”回调，`ota_manager` 不再自行依赖 LittleFS；配置保存、静态文件和文件管理请求与 OTA 擦写使用同一存储租约，避免同时访问底层分区。
-
-WiFi 配置更新采用“临时文件写入并同步 → 应用运行时配置 → 原子重命名提交”的事务顺序。提交或回滚异常时会停用 STA 重连并保留配网 AP。若 LittleFS 在启动或文件系统 OTA 后无法挂载，固件仍会启动 AP 和 OTA 接口，根页面会提供内置的文件系统镜像恢复入口，不需要先重新烧录整机固件。
-
-未预置 JSON 时设备会启动配网 AP；也可以通过 Web 配网页面保存凭据。若需要在固件镜像中预置，复制并编辑 JSON 示例即可：
-
-```bash
-cp main/wifi_config.example.json data/wifi_config.json
-```
-
-**BluFi (BLE) 配网**：固件内置 `blufi_provisioning` 组件，BLE 广播名（短版 `ESP32S3-XXXXXX`，受 31 字节广播包限制）与 SoftAP 名（`ESP32S3-Template-XXXXXX`）都含 MAC 后缀、每板唯一。手机配网可选：
-- 微信小程序 **[BlufiEsp32WeChat](https://github.com/xuhongv/BlufiEsp32WeChat)**（免装 App）；
-- EspBlufi 原生 App（Android: EspBlufi / iOS: EspBlufiForiOS）。
-
-配网时下发 STA 凭据，经 `wifi_config_store_apply_credentials` 落地（应用 + 原子持久化 + 失败回滚），与 Web 配网共用同一套凭据与持久化路径。WiFi 模式保持 APSTA（由 `wifi_manager` 统一管理），BLE 常开以便随时（重新）配网。
-
-BLE 由两个编译开关控制：**`CONFIG_BLE_ENABLED`**（BLE 总开关，NimBLE host，由 `ble_host` 组件统一拉起）+ **`CONFIG_BLUFI_PROVISIONING_ENABLED`**（配网功能，依赖 BLE）。两者默认都在 `sdkconfig.defaults` 中为 `y`。开启会引入 **NimBLE（BLE-only）栈，常驻约 40 KB SRAM**；若板子不需要 BLE，将两者置 `n` 可把蓝牙栈整体剔除、回收这部分内存。
-
-### 可选启用 SD 卡
-
-默认固件不会初始化 `sd_card`。需要文件管理器访问 SD 卡时，在 `main/CMakeLists.txt` 的 `REQUIRES` 中添加 `sd_card`，然后在 `web_platform_init()` 之前显式初始化：
-
-```c
-#include "sd_card.h"
-
-esp_err_t sd_err = sd_card_init();
-if (sd_err != ESP_OK) {
-    ESP_LOGW(TAG, "SD card init failed: %s", esp_err_to_name(sd_err));
-}
-```
-
-默认引脚为 CLK=IO47、CMD=IO48、D0=IO21（SDMMC 1-bit，立创实战派），挂载点 `/sdcard`。如需自定义（例如换引脚或挂载点），使用配置化入口；未填的字段回退到模板默认值：
-
-```c
-sd_card_config_t cfg = { .mount_point = "/sdcard", .clk_io = 47, .cmd_io = 48, .d0_io = 21 };
-esp_err_t sd_err = sd_card_init_with_config(&cfg);
-```
-
-文件管理器的内部存储分区、内部挂载点和可选 SD 挂载点由应用层传入。默认模板只配置 LittleFS，文件管理页面会隐藏未配置的 SD 后端；用户启用 SD 并传入挂载点后，原有 SD 文件管理接口仍可用。
-
-### 可选启用 SD 日志
-
-默认固件不会初始化 `sd_logger`，WiFi、Web 等平台组件也不依赖它。需要日志双写时，由用户在自己的启动编排中显式依赖 `sd_logger`，并在 `sd_card_init()` 成功后调用 `sd_logger_init()`（默认日志目录 `/sdcard/log`；如需自定义目录，用 `sd_logger_init_with_config()` 传入，避免硬编码 SD 挂载点）。
-
-SNTP 同步后自动切换带时间戳的日志文件名：`wifi_manager` 提供对外回调钩子 `wifi_manager_set_time_synced_callback()`，在其中调用 `sd_logger_notify_time_synced()` 即可，无需重复注册 `NETIF_SNTP_EVENT` 事件处理器。
-
-### LED 组件边界
-
-`wifi_manager` 和 `web_platform` 均不依赖 LED。`led_task` 默认关闭（立创实战派无板载 LED）；在 menuconfig 开启 `CONFIG_LED_TASK_ENABLE` 后，`main/main.c` 会初始化 `led_task` 并启动绿灯心跳：
-
-```c
-#include "led_task.h"
-
-ESP_ERROR_CHECK(led_task_init());
-
-const led_cmd_t heartbeat = {
-    .led = LED_GREEN,
-    .type = LED_CMD_BLINK,
-    .period_ms = 500u,
-    .on_ms = 250u,
-};
-led_send_cmd(&heartbeat);
-```
-
-如需关闭默认心跳，将 `CONFIG_LED_TASK_ENABLE` 置 `n` 即可（代码保留不删）；如需用 LED 表示网络状态，可在应用层注册 ESP-IDF 的 `WIFI_EVENT` / `IP_EVENT` 处理器后发送 LED 命令，无需修改或反向依赖 `wifi_manager`。
-
-模板已为你处理好了 WiFi、存储、Web 服务等基础设施，你只需关注自己的业务逻辑。
+WiFi 凭据写入 `data/wifi_config.json`（已被 git 忽略，勿提交密码）。

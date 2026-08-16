@@ -300,6 +300,9 @@ static void capture_task(void *arg)
                 s_capture_done = true;
                 xSemaphoreGive(s_samples_mutex);
             }
+            ESP_LOGI(TAG, "infer: stack_highwater=%u heap_free=%u",
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL),
+                     (unsigned)esp_get_free_heap_size());
             ESP_LOGI(TAG, "inference done");
         } else {
             const int sel = s_selected;
@@ -577,20 +580,35 @@ static void ui_timer_cb(lv_timer_t *timer)
     /* 推理结果：大字透明字母叠加到图表区域（类 id：0=C,1=B,2=A）。
      * 结果只在图表上显示，右侧面板只给中性状态，不显示识别结果。 */
     if (infer_new) {
+        lv_mem_monitor_t mon;
+        lv_mem_monitor(&mon);
+        ESP_LOGI(TAG, "lvmem before overlay: free=%u biggest=%u frag=%u%%",
+                 (unsigned)mon.free_size, (unsigned)mon.free_biggest_size, (unsigned)mon.frag_pct);
         if (infer_id >= 0 && infer_id < INFER_AXES) {
             static const char *letters[INFER_AXES] = { "C", "B", "A" };
+            /* A=红, B=绿, C=蓝（半透明柔和色，id 映射 0=C,1=B,2=A） */
+            switch (infer_id) {
+            case 0:  lv_obj_set_style_text_color(s_infer_overlay, lv_color_hex(0x40A0FF), 0); break; /* C -> 蓝 */
+            case 1:  lv_obj_set_style_text_color(s_infer_overlay, lv_color_hex(0x40FF40), 0); break; /* B -> 绿 */
+            default: lv_obj_set_style_text_color(s_infer_overlay, lv_color_hex(0xFF5040), 0); break; /* A -> 红 */
+            }
             lv_label_set_text(s_infer_overlay, letters[infer_id]);
             lv_obj_update_layout(s_infer_overlay);      /* 先算好内容尺寸 */
-            lv_obj_set_style_transform_pivot_x(s_infer_overlay,
-                                               lv_obj_get_width(s_infer_overlay) / 2, 0);
-            lv_obj_set_style_transform_pivot_y(s_infer_overlay,
-                                               lv_obj_get_height(s_infer_overlay) / 2, 0);
-            lv_obj_set_style_transform_scale(s_infer_overlay, 512, 0);  /* 2x 放大 */
+            const int32_t ow = lv_obj_get_width(s_infer_overlay);
+            const int32_t oh = lv_obj_get_height(s_infer_overlay);
+            const int32_t glyph_bottom = oh - lv_font_montserrat_48.base_line; /* 字形底部=基线 */
+            lv_obj_set_style_transform_pivot_x(s_infer_overlay, ow, 0);        /* 锚定字形右下角 */
+            lv_obj_set_style_transform_pivot_y(s_infer_overlay, glyph_bottom, 0);
+            lv_obj_set_style_transform_scale(s_infer_overlay, 512, 0);         /* 2x 向左上放大 */
+            lv_obj_align(s_infer_overlay, LV_ALIGN_BOTTOM_RIGHT, -6, oh - glyph_bottom - 6);
             lv_obj_clear_flag(s_infer_overlay, LV_OBJ_FLAG_HIDDEN);
             lv_label_set_text(s_status_label, "Infer done");
         } else {
             lv_label_set_text(s_status_label, "Infer: failed");
         }
+        lv_mem_monitor(&mon);
+        ESP_LOGI(TAG, "lvmem after overlay: free=%u biggest=%u frag=%u%%",
+                 (unsigned)mon.free_size, (unsigned)mon.free_biggest_size, (unsigned)mon.frag_pct);
     }
 
     /* 截图保存结果提示（写卡任务回填，与采集状态互不覆盖） */
@@ -640,7 +658,7 @@ void gesture_demo_ui_create(void)
     lv_obj_set_style_text_font(s_infer_overlay, &lv_font_montserrat_48, 0);
     lv_obj_set_style_text_color(s_infer_overlay, lv_color_hex(0x000000), 0);  /* 黑色水印 */
     lv_obj_set_style_text_opa(s_infer_overlay, LV_OPA_50, 0);                 /* 半透明 */
-    lv_obj_center(s_infer_overlay);
+    lv_obj_align(s_infer_overlay, LV_ALIGN_BOTTOM_RIGHT, -6, -6);
     lv_obj_add_flag(s_infer_overlay, LV_OBJ_FLAG_HIDDEN);
 
     /* ── 右侧：每轴 max/min + 状态 ── */
@@ -764,9 +782,15 @@ esp_err_t gesture_demo_start(void)
 
     boot_btn_init();
 
-    if (xTaskCreate(capture_task, "gesture_cap", 10240, NULL, 5, NULL) != pdPASS) {
+    if (xTaskCreate(capture_task, "gesture_cap", 16384, NULL, 5, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     ESP_LOGI(TAG, "gesture demo started (BOOT: 2s capture; A/B/C=CSV mode, Infer=classifier mode)");
     return ESP_OK;
 }
+
+
+
+
+
+
