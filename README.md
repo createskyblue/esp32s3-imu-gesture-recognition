@@ -4,6 +4,7 @@
 > 按一次 **BOOT** 键采集 2 秒三轴加速度，屏幕实时显示波形，并可一键完成 **A / B / C** 三分类手势的实时推理。
 >
 > - 项目仓库：[createskyblue/esp32s3-imu-gesture-recognition](https://github.com/createskyblue/esp32s3-imu-gesture-recognition)
+> - 演示视频：https://www.bilibili.com/video/BV1oSbX6DEbN
 > - 硬件文档：[立创实战派 ESP32-S3 Wiki](https://wiki.lckfb.com/zh-hans/szpi-esp32s3/)
 > - 起始模板：[createskyblue/esp32s3_idf_template](https://github.com/createskyblue/esp32s3_idf_template)
 > - 联系：createskyblue@outlook.com ／ 博客 https://createskyblue.github.io/
