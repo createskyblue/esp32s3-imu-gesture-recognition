@@ -1,0 +1,335 @@
+#include "lcd_lvgl.h"
+
+#include <stdint.h>
+#include <string.h>
+
+#include "driver/gpio.h"
+#include "driver/i2c_master.h"
+#include "driver/ledc.h"
+#include "driver/spi_master.h"
+#include "esp_check.h"
+#include "esp_heap_caps.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_st7789.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "lvgl.h"
+
+/* ═══════════════ 立创实战派 ESP32-S3 引脚定义 ═══════════════ */
+
+/* I2C (PCA9557 IO expander / QMI8658 IMU share this bus) */
+#define BSP_I2C_SDA          GPIO_NUM_1
+#define BSP_I2C_SCL          GPIO_NUM_2
+#define BSP_I2C_FREQ_HZ      (100000)
+
+/* PCA9557 IO expander (address 0x19) */
+#define PCA9557_SENSOR_ADDR         0x19
+#define PCA9557_INPUT_PORT          0x00
+#define PCA9557_OUTPUT_PORT         0x01
+#define PCA9557_POLARITY_PORT       0x02
+#define PCA9557_CONFIGURATION_PORT  0x03
+#define PCA9557_LCD_CS_BIT          (1u << 0)
+#define PCA9557_PA_EN_BIT           (1u << 1)
+#define PCA9557_DVP_PWDN_BIT        (1u << 2)
+
+/* LCD ST7789, 320x240, SPI */
+#define LCD_H_RES           320
+#define LCD_V_RES           240
+#define LCD_SPI_HOST        SPI3_HOST
+#define LCD_PIXEL_CLOCK_HZ  (80 * 1000 * 1000)
+#define LCD_PIN_MOSI        GPIO_NUM_40
+#define LCD_PIN_SCLK        GPIO_NUM_41
+#define LCD_PIN_CS          GPIO_NUM_NC   /* CS is driven by PCA9557 */
+#define LCD_PIN_DC          GPIO_NUM_39
+#define LCD_PIN_RST         GPIO_NUM_NC
+#define LCD_PIN_BACKLIGHT   GPIO_NUM_42
+#define LCD_BITS_PER_PIXEL  16
+
+/* LEDC backlight: low-speed mode, ch0/timer1, 10-bit, 5 kHz, inverted */
+#define LCD_LEDC_MODE       LEDC_LOW_SPEED_MODE
+#define LCD_LEDC_CH         LEDC_CHANNEL_0
+#define LCD_LEDC_TIMER      LEDC_TIMER_1
+#define LCD_LEDC_DUTY_RES   LEDC_TIMER_10_BIT
+#define LCD_LEDC_FREQ_HZ    5000
+#define LCD_LEDC_MAX_DUTY   ((1u << 10) - 1u)
+
+/* LVGL: two partial draw buffers, 24 rows each (1/10 of 240 lines) */
+#define LCD_BUFFER_ROWS     24
+#define LCD_BUFFER_BYTES    (LCD_H_RES * LCD_BUFFER_ROWS * sizeof(uint16_t))
+
+#define DISPLAY_TASK_STACK_BYTES 16384u
+#define DISPLAY_TASK_PRIORITY    10u
+#define DISPLAY_REFRESH_MS       33u
+
+static const char *TAG = "LCD_LVGL";
+
+static i2c_master_bus_handle_t s_i2c_bus = NULL;
+static i2c_master_dev_handle_t s_pca9557_dev = NULL;
+static esp_lcd_panel_handle_t s_panel = NULL;
+
+/* ═══════════════ I2C (new driver API) ═══════════════ */
+
+static esp_err_t bsp_i2c_init(void)
+{
+    i2c_master_bus_config_t bus_cfg = {
+        .i2c_port = I2C_NUM_0,
+        .sda_io_num = BSP_I2C_SDA,
+        .scl_io_num = BSP_I2C_SCL,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_cfg, &s_i2c_bus),
+                        TAG, "I2C bus init failed");
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = PCA9557_SENSOR_ADDR,
+        .scl_speed_hz = BSP_I2C_FREQ_HZ,
+    };
+    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(s_i2c_bus, &dev_cfg,
+                                                  &s_pca9557_dev),
+                        TAG, "PCA9557 device add failed");
+    ESP_LOGI(TAG, "I2C ready (SDA=1, SCL=2, 100 kHz)");
+    return ESP_OK;
+}
+
+/* ═══════════════ PCA9557 IO expander ═══════════════ */
+
+static esp_err_t pca9557_write_byte(uint8_t reg, uint8_t data)
+{
+    uint8_t buf[2] = { reg, data };
+    return i2c_master_transmit(s_pca9557_dev, buf, sizeof(buf), 100);
+}
+
+static esp_err_t pca9557_read_byte(uint8_t reg, uint8_t *data)
+{
+    return i2c_master_transmit_receive(s_pca9557_dev, &reg, 1, data, 1, 100);
+}
+
+static esp_err_t pca9557_init(void)
+{
+    /* Default outputs: DVP_PWDN=1, PA_EN=0, LCD_CS=1 */
+    ESP_RETURN_ON_ERROR(pca9557_write_byte(PCA9557_OUTPUT_PORT, 0x05),
+                        TAG, "PCA9557 output write failed");
+    /* IO0-2 configured as outputs, the rest stay inputs */
+    ESP_RETURN_ON_ERROR(pca9557_write_byte(PCA9557_CONFIGURATION_PORT, 0xf8),
+                        TAG, "PCA9557 config write failed");
+    return ESP_OK;
+}
+
+static esp_err_t lcd_cs_set(bool level)
+{
+    uint8_t data = 0;
+    ESP_RETURN_ON_ERROR(pca9557_read_byte(PCA9557_OUTPUT_PORT, &data),
+                        TAG, "PCA9557 read failed");
+    if (level) {
+        data |= PCA9557_LCD_CS_BIT;
+    } else {
+        data &= (uint8_t)~PCA9557_LCD_CS_BIT;
+    }
+    return pca9557_write_byte(PCA9557_OUTPUT_PORT, data);
+}
+
+/* ═══════════════ LEDC backlight ═══════════════ */
+
+static esp_err_t bsp_display_backlight_init(void)
+{
+    const ledc_timer_config_t timer_cfg = {
+        .speed_mode = LCD_LEDC_MODE,
+        .duty_resolution = LCD_LEDC_DUTY_RES,
+        .timer_num = LCD_LEDC_TIMER,
+        .freq_hz = LCD_LEDC_FREQ_HZ,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    ESP_RETURN_ON_ERROR(ledc_timer_config(&timer_cfg),
+                        TAG, "LEDC timer config failed");
+
+    const ledc_channel_config_t ch_cfg = {
+        .gpio_num = LCD_PIN_BACKLIGHT,
+        .speed_mode = LCD_LEDC_MODE,
+        .channel = LCD_LEDC_CH,
+        .intr_type = LEDC_INTR_DISABLE,
+        .timer_sel = LCD_LEDC_TIMER,
+        .duty = 0,
+        .hpoint = 0,
+        .flags.output_invert = true,   /* backlight is active-low */
+    };
+    ESP_RETURN_ON_ERROR(ledc_channel_config(&ch_cfg),
+                        TAG, "LEDC channel config failed");
+    return ESP_OK;
+}
+
+static esp_err_t bsp_display_backlight_set(int brightness_percent)
+{
+    if (brightness_percent < 0) brightness_percent = 0;
+    if (brightness_percent > 100) brightness_percent = 100;
+    const uint32_t duty =
+        (LCD_LEDC_MAX_DUTY * (uint32_t)brightness_percent) / 100u;
+    ESP_RETURN_ON_ERROR(ledc_set_duty(LCD_LEDC_MODE, LCD_LEDC_CH, duty),
+                        TAG, "LEDC set duty failed");
+    ESP_RETURN_ON_ERROR(ledc_update_duty(LCD_LEDC_MODE, LCD_LEDC_CH),
+                        TAG, "LEDC update duty failed");
+    return ESP_OK;
+}
+
+/* ═══════════════ ST7789 panel ═══════════════ */
+
+static esp_err_t lcd_panel_init(void)
+{
+    const spi_bus_config_t bus_cfg = {
+        .sclk_io_num = LCD_PIN_SCLK,
+        .mosi_io_num = LCD_PIN_MOSI,
+        .miso_io_num = GPIO_NUM_NC,
+        .quadwp_io_num = GPIO_NUM_NC,
+        .quadhd_io_num = GPIO_NUM_NC,
+        .max_transfer_sz = LCD_H_RES * LCD_V_RES * sizeof(uint16_t),
+    };
+    ESP_RETURN_ON_ERROR(spi_bus_initialize(LCD_SPI_HOST, &bus_cfg,
+                                           SPI_DMA_CH_AUTO),
+                        TAG, "SPI bus init failed");
+
+    esp_lcd_panel_io_handle_t io = NULL;
+    const esp_lcd_panel_io_spi_config_t io_cfg = {
+        .cs_gpio_num = LCD_PIN_CS,       /* GPIO_NUM_NC: CS via PCA9557 */
+        .dc_gpio_num = LCD_PIN_DC,
+        .spi_mode = 2,                   /* board wiring uses SPI mode 2 */
+        .pclk_hz = LCD_PIXEL_CLOCK_HZ,
+        .trans_queue_depth = 10,
+        .lcd_cmd_bits = 8,
+        .lcd_param_bits = 8,
+        .on_color_trans_done = NULL,
+        .user_ctx = NULL,
+    };
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi(LCD_SPI_HOST, &io_cfg, &io),
+                        TAG, "New SPI panel IO failed");
+
+    const esp_lcd_panel_dev_config_t panel_cfg = {
+        .reset_gpio_num = LCD_PIN_RST,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .bits_per_pixel = LCD_BITS_PER_PIXEL,
+    };
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_st7789(io, &panel_cfg, &s_panel),
+                        TAG, "New ST7789 panel failed");
+
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(s_panel), TAG, "Panel reset failed");
+    ESP_RETURN_ON_ERROR(lcd_cs_set(false), TAG, "LCD CS low failed");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_init(s_panel), TAG, "Panel init failed");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(s_panel, true),
+                        TAG, "Invert color failed");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_swap_xy(s_panel, true),
+                        TAG, "Swap xy failed");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_mirror(s_panel, true, false),
+                        TAG, "Mirror failed");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(s_panel, true),
+                        TAG, "Display on failed");
+    ESP_RETURN_ON_ERROR(bsp_display_backlight_set(100),
+                        TAG, "Backlight on failed");
+    ESP_LOGI(TAG, "ST7789 panel ready (%ux%u @ %u Hz)",
+             LCD_H_RES, LCD_V_RES, (unsigned)LCD_PIXEL_CLOCK_HZ);
+    return ESP_OK;
+}
+
+/* ═══════════════ LVGL 9 ═══════════════ */
+
+static uint32_t lv_tick_get_ms(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000ULL);
+}
+
+static void lcd_flush_cb(lv_display_t *disp, const lv_area_t *area,
+                         uint8_t *px_map)
+{
+    /* ST7789 expects RGB565 high byte first; LVGL renders little-endian,
+     * so swap every pixel before handing the buffer to esp_lcd. */
+    uint16_t *pixels = (uint16_t *)px_map;
+    const size_t count = (size_t)(area->x2 - area->x1 + 1) *
+                         (size_t)(area->y2 - area->y1 + 1);
+    for (size_t i = 0; i < count; ++i) {
+        const uint16_t p = pixels[i];
+        pixels[i] = (uint16_t)((p >> 8) | (p << 8));
+    }
+
+    esp_lcd_panel_draw_bitmap(s_panel, area->x1, area->y1,
+                              area->x2 + 1, area->y2 + 1, px_map);
+    lv_display_flush_ready(disp);
+}
+
+static void demo_screen_create(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x002244), 0);
+
+    lv_obj_t *label = lv_label_create(scr);
+    lv_label_set_text(label, "立创实战派 ESP32-S3\nLVGL 9.5.0");
+    lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(label);
+}
+
+static void display_task(void *arg)
+{
+    (void)arg;
+
+    esp_err_t err = lcd_panel_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "LCD init failed (%s); display task stopped",
+                 esp_err_to_name(err));
+        vTaskDelete(NULL);
+        return;
+    }
+
+    /* Two partial draw buffers; prefer PSRAM, fall back to internal RAM. */
+    uint8_t *buf1 = heap_caps_malloc(LCD_BUFFER_BYTES,
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t *buf2 = heap_caps_malloc(LCD_BUFFER_BYTES,
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (buf1 == NULL) {
+        buf1 = heap_caps_malloc(LCD_BUFFER_BYTES,
+                                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    if (buf2 == NULL) {
+        buf2 = heap_caps_malloc(LCD_BUFFER_BYTES,
+                                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    if (buf1 == NULL || buf2 == NULL) {
+        ESP_LOGE(TAG, "Not enough memory for LVGL draw buffers");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    lv_init();
+    lv_tick_set_cb(lv_tick_get_ms);
+
+    lv_display_t *disp = lv_display_create(LCD_H_RES, LCD_V_RES);
+    lv_display_set_flush_cb(disp, lcd_flush_cb);
+    lv_display_set_buffers(disp, buf1, buf2, LCD_BUFFER_BYTES,
+                           LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+    demo_screen_create();
+
+    ESP_LOGI(TAG, "display task started");
+    while (1) {
+        lv_timer_handler();
+        vTaskDelay(pdMS_TO_TICKS(DISPLAY_REFRESH_MS));
+    }
+}
+
+/* ═══════════════ public API ═══════════════ */
+
+esp_err_t lcd_lvgl_start(void)
+{
+    ESP_RETURN_ON_ERROR(bsp_i2c_init(), TAG, "I2C init failed");
+    ESP_RETURN_ON_ERROR(pca9557_init(), TAG, "PCA9557 init failed");
+    ESP_RETURN_ON_ERROR(bsp_display_backlight_init(), TAG, "Backlight init failed");
+
+    if (xTaskCreate(display_task, "display", DISPLAY_TASK_STACK_BYTES, NULL,
+                    DISPLAY_TASK_PRIORITY, NULL) != pdPASS) {
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG, "display task created");
+    return ESP_OK;
+}

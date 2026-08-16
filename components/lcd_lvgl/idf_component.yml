@@ -1,0 +1,4 @@
+dependencies:
+  # Latest LVGL on the Espressif component registry (9.5.0), same version
+  # used by the ESP32_PAR20_4H_IDF reference project.
+  lvgl/lvgl: "9.5.0"

@@ -13,24 +13,23 @@ extern "C" {
 /**
  * Caller-owned SD card configuration copied by sd_card_init_with_config().
  * Zeroed fields fall back to the template defaults shown in the comments.
+ * The board default is 1-bit SDMMC (立创实战派 ESP32-S3: CLK=47, CMD=48, D0=21).
  */
 typedef struct {
     const char *mount_point;      /* default: "/sdcard" */
-    int mosi_io;                  /* default: 11  */
-    int sclk_io;                  /* default: 12  */
-    int miso_io;                  /* default: 13  */
-    int cs_io;                    /* default: 10  */
-    int host_id;                  /* default: SPI2_HOST */
-    uint32_t max_freq_khz;        /* default: 20000 */
+    int clk_io;                   /* default: 47 */
+    int cmd_io;                   /* default: 48 */
+    int d0_io;                    /* default: 21 */
+    uint32_t max_freq_khz;        /* default: 20000 (20 MHz) */
     uint8_t max_open_files;       /* default: 8 */
     uint16_t allocation_unit_size;/* default: 16 * 1024 */
 } sd_card_config_t;
 
-/** Initialize SD card over SPI using the template default configuration. */
+/** Initialize SD card over SDMMC (1-bit) using the template default config. */
 esp_err_t sd_card_init(void);
 
 /**
- * Initialize SD card over SPI using caller-provided configuration.
+ * Initialize SD card over SDMMC (1-bit) using caller-provided configuration.
  * Mounts FAT at the configured mount point; no listing or self-test is run.
  */
 esp_err_t sd_card_init_with_config(const sd_card_config_t *config);

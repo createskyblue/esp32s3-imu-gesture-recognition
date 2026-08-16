@@ -9,6 +9,7 @@
 
 #include "app_storage.h"
 #include "led_task.h"
+#include "lcd_lvgl.h"
 #include "web_platform.h"
 #include "wifi_config_store.h"
 #include "wifi_manager.h"
@@ -59,6 +60,12 @@ void app_main(void)
     if (storage_err != ESP_OK) {
         ESP_LOGE(TAG, "LittleFS unavailable: %s; starting AP + OTA recovery mode",
                  esp_err_to_name(storage_err));
+    }
+
+    /* 立创实战派 LCD (ST7789) + LVGL 9.5: 创建显示任务点亮屏幕 */
+    esp_err_t lcd_err = lcd_lvgl_start();
+    if (lcd_err != ESP_OK) {
+        ESP_LOGE(TAG, "LCD/LVGL start failed: %s", esp_err_to_name(lcd_err));
     }
 
     ESP_ERROR_CHECK(led_task_init());

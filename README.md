@@ -10,12 +10,13 @@
 | **Web 配网** | 网页端输入 SSID/密码，配置持久化到 LittleFS，自动重连 |
 | **Captive Portal** | DNS 劫持，手机连上 AP 后自动弹出配网页面 |
 | **LittleFS** | 1 MB 内部闪存文件系统，存放网页和配置文件 |
-| **SD 卡（可选）** | 独立 SPI/FAT 驱动；默认固件不初始化、不占用 SD GPIO |
+| **SD 卡（可选）** | 独立 SDMMC(1-bit)/FAT 驱动；默认固件不初始化、不占用 SD GPIO |
 | **文件管理器** | Web 界面浏览/上传/下载/删除/新建文件夹，支持内部 Flash 和 SD 卡双存储 |
 | **OTA 升级** | 支持固件 + 文件系统远程升级，也支持网页直接上传刷写 |
 | **SD 日志（可选）** | 独立的 ESP_LOG 双写组件；默认固件不初始化、不接管全局日志输出 |
 | **SNTP 授时** | STA 连接成功后自动同步北京时间（ntp.aliyun.com） |
 | **LED 心跳** | `main` 显式启用独立 LED 组件，绿灯以 2 Hz、50% 占空比持续闪烁 |
+| **LCD + LVGL** | 立创实战派 ST7789 屏幕 + LVGL 9.5 显示任务（`main` 默认启用） |
 | **调试接口** | `/debug.json` 查看堆内存、PSRAM、任务列表、运行时间 |
 
 ## 界面预览
@@ -38,15 +39,28 @@
 | 蓝  | IO5  |
 
 ### SD 卡（SPI 模式）
+### SD 卡（SDMMC 1-bit 模式，立创实战派）
 
 | 信号 | GPIO |
 |------|------|
-| MOSI | IO11 |
-| SCLK | IO12 |
-| MISO | IO13 |
-| CS   | IO10 |
-| CD   | IO14 |
+| CLK  | IO47 |
+| CMD  | IO48 |
+| D0   | IO21 |
 
+### LCD（ST7789 + LVGL 9.5，立创实战派）
+
+main 默认调用 lcd_lvgl_start() 创建显示任务点亮屏幕（ST7789 320x240，LVGL 9.5.0）。
+LCD 的 CS 引脚由 PCA9557 IO 扩展芯片控制（I2C 地址 0x19，IO0），初始化后自动拉低。
+
+| 信号 | GPIO |
+|------|------|
+| SPI MOSI | IO40 |
+| SPI SCLK | IO41 |
+| LCD DC   | IO39 |
+| 背光 BL  | IO42 |
+| LCD CS   | PCA9557（I2C 地址 0x19，IO0） |
+| I2C SDA  | IO1  |
+| I2C SCL  | IO2  |
 ## 网页端点
 
 | 路径 | 说明 |
@@ -110,7 +124,8 @@ idf.py -p COMx flash monitor
     ├── ota_manager/            # OTA 状态机 + 下载刷写 + 上传逻辑
     ├── file_manager/           # Web 文件管理器 API
     ├── led_task/               # 独立四路 LED 驱动（main 默认启用绿灯心跳）
-    ├── sd_card/                # SD 卡 SPI 驱动（配置化入口 sd_card_init_with_config）
+    ├── sd_card/                # SD 卡 SDMMC 1-bit 驱动（配置化入口 sd_card_init_with_config）
+    ├── lcd_lvgl/               # 立创实战派 LCD(ST7789) + LVGL 9.5 显示组件（main 默认启用）
     ├── sd_logger/              # 可选日志双写组件（默认未启用）
     └── json/                   # 共享 HTTP/JSON 辅助（json_http.h/.c）
 ```
@@ -177,10 +192,10 @@ if (sd_err != ESP_OK) {
 }
 ```
 
-默认引脚为 MOSI=IO11、SCLK=IO12、MISO=IO13、CS=IO10，挂载点 `/sdcard`。如需自定义（例如换 CS 引脚或挂载点），使用配置化入口；未填的字段回退到模板默认值：
+默认引脚为 CLK=IO47、CMD=IO48、D0=IO21（SDMMC 1-bit，立创实战派），挂载点 `/sdcard`。如需自定义（例如换引脚或挂载点），使用配置化入口；未填的字段回退到模板默认值：
 
 ```c
-sd_card_config_t cfg = { .mount_point = "/sdcard", .cs_io = 21 };
+sd_card_config_t cfg = { .mount_point = "/sdcard", .clk_io = 47, .cmd_io = 48, .d0_io = 21 };
 esp_err_t sd_err = sd_card_init_with_config(&cfg);
 ```
 
